@@ -679,6 +679,8 @@ Tokens: ~%4$d -&gt; ~%5$d</string>
     <string name="git_operation_in_progress">Working…</string>
     <string name="git_confirm_commit">Commit</string>
     <string name="git_generate_message">Generate</string>
+    <string name="git_generate_failed">Generate failed, please retry</string>
+    <string name="git_generate_no_model">On-device model not downloaded, unable to generate</string>
     <string name="git_no_remotes">No remotes configured</string>
     <string name="git_confirm_create">Create</string>
 

@@ -78,6 +78,12 @@ data class GitFileDiff(
     val deletions: Int,
 )
 
+/** shell 命令执行结果：退出码与输出文本。 */
+private data class CommandResult(val exitCode: Int, val output: String)
+
+/** Git 操作失败（退出码非 0）时抛出，message 为 git 命令的报错输出。 */
+private class GitOperationException(message: String) : Exception(message)
+
 /** Git 页面的 UI 状态。 */
 data class GitUiState(
     val directory: String = "",
@@ -93,12 +99,14 @@ data class GitUiState(
     val commitChanges: List<GitChange> = emptyList(),
     val commitDiff: String = "",
     val isLoadingCommit: Boolean = false,
+    val commitFileDiff: GitFileDiff? = null,
     val remotes: List<String> = emptyList(),
     val notRepository: Boolean = false,
     val isLoading: Boolean = true,
     val error: String? = null,
     val isRunning: Boolean = false,
     val operationMessage: String? = null,
+    val operationError: String? = null,
 )
 
 /**
@@ -359,14 +367,40 @@ class GitViewModel @Inject constructor(
                 val script = buildString {
                     append("printf '\\n__GIT_NAMESTATUS__\\n'\n")
                     append("$g diff-tree --no-commit-id --name-status -r ${commit.hash}\n")
+                    append("printf '\\n__GIT_NUMSTAT__\\n'\n")
+                    append("$g diff-tree --no-commit-id --numstat -r ${commit.hash}\n")
                     append("printf '\\n__GIT_SHOW__\\n'\n")
                     append("$g show --stat --format= ${shQuote(commit.hash)}\n")
                     append("printf '\\n$end\\n'\n")
                 }
                 val raw = runCatching { executeScript(script, end) }.getOrDefault("")
-                val changes = parseNameStatus(section(raw, "NAMESTATUS"))
+                val nameStatus = parseNameStatus(section(raw, "NAMESTATUS"))
+                val numstat = parseNumstat(section(raw, "NUMSTAT"))
+                val changes = nameStatus.map { c ->
+                    val counts = numstat[c.path]
+                    c.copy(additions = counts?.first ?: 0, deletions = counts?.second ?: 0)
+                }
                 val diff = section(raw, "SHOW")
-                _uiState.update { it.copy(commitChanges = changes, commitDiff = diff, isLoadingCommit = false) }
+                _uiState.update { it.copy(commitChanges = changes, commitDiff = diff, isLoadingCommit = false, commitFileDiff = null) }
+            }
+        }
+    }
+
+    /** 加载某次提交中单个文件的 diff；再次点击同一文件则折叠。 */
+    fun loadCommitFileDiff(commitHash: String, path: String) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                val root = _uiState.value.selectedRepo.ifBlank { return@withContext }
+                if (_uiState.value.commitFileDiff?.path == path) {
+                    _uiState.update { it.copy(commitFileDiff = null) }
+                    return@withContext
+                }
+                val content = runCatching {
+                    runCommand(gitCmd(root, "show --no-ext-diff --format= ${shQuote(commitHash)} -- ${shQuote(path)}"))
+                }.getOrDefault("")
+                _uiState.update {
+                    it.copy(commitFileDiff = GitFileDiff(path = path, content = content, additions = 0, deletions = 0))
+                }
             }
         }
     }
@@ -377,8 +411,10 @@ class GitViewModel @Inject constructor(
         if (trimmed.isEmpty()) return
         runOperation("commit") {
             val root = _uiState.value.selectedRepo
-            runCommand(gitCmd(root, "add -A"))
-            runCommand(gitCmd(root, "-c core.editor=true commit -m ${shQuote(trimmed)}"))
+            val add = runCommandResult(gitCmd(root, "add -A"))
+            if (add.exitCode != 0) throw GitOperationException(add.output)
+            val cm = runCommandResult(gitCmd(root, "-c core.editor=true commit -m ${shQuote(trimmed)}"))
+            if (cm.exitCode != 0) throw GitOperationException(cm.output)
         }
     }
 
@@ -386,19 +422,22 @@ class GitViewModel @Inject constructor(
     fun push(remote: String) = runOperation("push") {
         val root = _uiState.value.selectedRepo
         val target = _uiState.value.branch?.takeIf { it.isNotBlank() } ?: "HEAD"
-        runCommand(gitCmd(root, "push ${shQuote(remote)} ${shQuote(target)}"))
+        val r = runCommandResult(gitCmd(root, "push ${shQuote(remote)} ${shQuote(target)}"))
+        if (r.exitCode != 0) throw GitOperationException(r.output)
     }
 
     /** 从指定 remote 拉取当前分支（`git pull --rebase <remote> <branch>`）。 */
     fun pull(remote: String) = runOperation("pull") {
         val root = _uiState.value.selectedRepo
         val target = _uiState.value.branch?.takeIf { it.isNotBlank() } ?: "HEAD"
-        runCommand(gitCmd(root, "pull --rebase ${shQuote(remote)} ${shQuote(target)}"))
+        val r = runCommandResult(gitCmd(root, "pull --rebase ${shQuote(remote)} ${shQuote(target)}"))
+        if (r.exitCode != 0) throw GitOperationException(r.output)
     }
 
     /** 切换到已有分支（`git checkout <branch>`）。 */
     fun checkout(branch: String) = runOperation("checkout") {
-        runCommand(gitCmd(_uiState.value.selectedRepo, "checkout ${shQuote(branch)}"))
+        val r = runCommandResult(gitCmd(_uiState.value.selectedRepo, "checkout ${shQuote(branch)}"))
+        if (r.exitCode != 0) throw GitOperationException(r.output)
     }
 
     /** 创建并切换到新分支（`git checkout -b <branch>`）。 */
@@ -406,13 +445,14 @@ class GitViewModel @Inject constructor(
         val name = branch.trim()
         if (name.isEmpty()) return
         runOperation("createBranch") {
-            runCommand(gitCmd(_uiState.value.selectedRepo, "checkout -b ${shQuote(name)}"))
+            val r = runCommandResult(gitCmd(_uiState.value.selectedRepo, "checkout -b ${shQuote(name)}"))
+            if (r.exitCode != 0) throw GitOperationException(r.output)
         }
     }
 
     /** 清空操作结果提示。 */
     fun clearOperationMessage() {
-        _uiState.update { it.copy(operationMessage = null) }
+        _uiState.update { it.copy(operationMessage = null, operationError = null) }
     }
 
     /** 清空已生成的提交信息。 */
@@ -496,14 +536,17 @@ class GitViewModel @Inject constructor(
     private fun runOperation(name: String, block: suspend () -> Unit) {
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
-                _uiState.update { it.copy(isRunning = true, error = null) }
+                _uiState.update { it.copy(isRunning = true, error = null, operationError = null) }
                 try {
                     block()
                     _uiState.update { it.copy(isRunning = false, operationMessage = "success") }
                     refreshInternal()
+                } catch (e: GitOperationException) {
+                    Log.e(TAG, "Git operation $name failed: ${e.message}", e)
+                    _uiState.update { it.copy(isRunning = false, operationMessage = "failed", operationError = e.message) }
                 } catch (e: Exception) {
                     Log.e(TAG, "Git operation $name failed", e)
-                    _uiState.update { it.copy(isRunning = false, operationMessage = "failed", error = e.message) }
+                    _uiState.update { it.copy(isRunning = false, operationMessage = "failed", operationError = e.message) }
                 }
             }
         }
@@ -715,6 +758,22 @@ class GitViewModel @Inject constructor(
         val script = "printf '$begin\\n'\n$command 2>&1\nprintf '\\n$end\\n'\n"
         val raw = ptySession.run(script, end, timeoutMs)
         return extract(begin, end, raw)
+    }
+
+    /** 执行 shell 命令并返回退出码与输出（用于需要区分成功/失败的操作）。 */
+    private suspend fun runCommandResult(command: String, timeoutMs: Long = 60_000): CommandResult {
+        val id = UUID.randomUUID().toString().replace("-", "")
+        val begin = "OPENGIT_B_$id"
+        val end = "OPENGIT_E_$id"
+        val exit = "OPENGIT_X_$id"
+        val script = "printf '$begin\\n'\n$command 2>&1\nprintf '${exit}%d\\n' \"\$?\"\nprintf '\\n$end\\n'\n"
+        val raw = ptySession.run(script, end, timeoutMs)
+        val body = extract(begin, end, raw)
+        val lines = body.lineSequence().toList()
+        val exitLine = lines.lastOrNull { it.startsWith(exit) }
+        val code = exitLine?.removePrefix(exit)?.trim()?.toIntOrNull() ?: 0
+        val output = lines.filterNot { it.startsWith(exit) }.joinToString("\n").trim()
+        return CommandResult(code, output)
     }
 
     /** 通过常驻 PTY 执行多行脚本，读取到 [endMarker] 后返回原始输出。 */

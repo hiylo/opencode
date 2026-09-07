@@ -736,6 +736,8 @@
     <string name="git_operation_in_progress">正在执行…</string>
     <string name="git_confirm_commit">提交</string>
     <string name="git_generate_message">AI 生成</string>
+    <string name="git_generate_failed">生成失败，请重试</string>
+    <string name="git_generate_no_model">端侧模型未下载，无法生成</string>
     <string name="git_no_remotes">未配置远端仓库</string>
     <string name="git_confirm_create">创建</string>
 </resources>

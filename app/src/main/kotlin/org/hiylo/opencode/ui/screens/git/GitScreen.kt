@@ -75,7 +75,8 @@ fun GitScreen(
 
     LaunchedEffect(state.operationMessage) {
         val message = state.operationMessage ?: return@LaunchedEffect
-        snackbarHostState.showSnackbar(if (message == "success") successMessage else failedMessage)
+        val text = if (message == "success") successMessage else (state.operationError ?: failedMessage)
+        snackbarHostState.showSnackbar(text)
         viewModel.clearOperationMessage()
     }
 
@@ -134,6 +135,7 @@ fun GitScreen(
                     onSelectRepo = viewModel::selectRepo,
                     onLoadDiff = viewModel::loadDiff,
                     onLoadCommitDetail = viewModel::loadCommitDetail,
+                    onLoadCommitFileDiff = viewModel::loadCommitFileDiff,
                 )
             }
         }
@@ -248,6 +250,7 @@ private fun GitContent(
     onSelectRepo: (String) -> Unit,
     onLoadDiff: (String) -> Unit,
     onLoadCommitDetail: (GitCommit) -> Unit,
+    onLoadCommitFileDiff: (String, String) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -268,7 +271,9 @@ private fun GitContent(
             commitChanges = state.commitChanges,
             commitDiff = state.commitDiff,
             isLoadingCommit = state.isLoadingCommit,
+            commitFileDiff = state.commitFileDiff,
             onLoadCommitDetail = onLoadCommitDetail,
+            onLoadCommitFileDiff = onLoadCommitFileDiff,
         )
     }
 }
@@ -486,7 +491,9 @@ private fun CommitsSection(
     commitChanges: List<GitChange>,
     commitDiff: String,
     isLoadingCommit: Boolean,
+    commitFileDiff: GitFileDiff?,
     onLoadCommitDetail: (GitCommit) -> Unit,
+    onLoadCommitFileDiff: (String, String) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -532,7 +539,14 @@ private fun CommitsSection(
                         )
                         if (expanded) {
                             Spacer(Modifier.height(8.dp))
-                            CommitDetail(commitChanges, commitDiff, isLoadingCommit)
+                            CommitDetail(
+                                changes = commitChanges,
+                                diff = commitDiff,
+                                loading = isLoadingCommit,
+                                commitHash = commit.hash,
+                                fileDiff = commitFileDiff,
+                                onLoadFileDiff = onLoadCommitFileDiff,
+                            )
                         }
                     }
                 }
@@ -542,7 +556,14 @@ private fun CommitsSection(
 }
 
 @Composable
-private fun CommitDetail(changes: List<GitChange>, diff: String, loading: Boolean) {
+private fun CommitDetail(
+    changes: List<GitChange>,
+    diff: String,
+    loading: Boolean,
+    commitHash: String,
+    fileDiff: GitFileDiff?,
+    onLoadFileDiff: (String, String) -> Unit,
+) {
     if (loading) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -559,16 +580,34 @@ private fun CommitDetail(changes: List<GitChange>, diff: String, loading: Boolea
                     "deleted" -> StatusError to stringResource(R.string.git_status_deleted)
                     else -> StatusWarning to stringResource(R.string.git_status_modified)
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(label, color = color, style = MaterialTheme.typography.labelSmall)
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        c.path,
-                        modifier = Modifier.weight(1f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                Column {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onLoadFileDiff(commitHash, c.path) },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(label, color = color, style = MaterialTheme.typography.labelSmall)
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            c.path,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        if (c.additions > 0) {
+                            Text("+${c.additions}", color = StatusConnected, style = MaterialTheme.typography.labelSmall)
+                            Spacer(Modifier.width(6.dp))
+                        }
+                        if (c.deletions > 0) {
+                            Text("-${c.deletions}", color = StatusError, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                    if (fileDiff?.path == c.path) {
+                        Spacer(Modifier.height(4.dp))
+                        FileDiffView(fileDiff)
+                    }
                 }
             }
         }
@@ -582,6 +621,39 @@ private fun CommitDetail(changes: List<GitChange>, diff: String, loading: Boolea
         ) {
             Column(modifier = Modifier.padding(8.dp)) {
                 diff.lines().take(200).forEach { line ->
+                    val color = when {
+                        line.startsWith("+") -> StatusConnected
+                        line.startsWith("-") -> StatusError
+                        line.startsWith("@@") || line.startsWith("diff") || line.startsWith("index") -> MaterialTheme.colorScheme.primary
+                        else -> Color.Unspecified
+                    }
+                    Text(
+                        text = line,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = if (color == Color.Unspecified) MaterialTheme.colorScheme.onSurfaceVariant else color,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FileDiffView(fileDiff: GitFileDiff) {
+    Surface(
+        shape = RoundedCornerShape(6.dp),
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(8.dp)) {
+            if (fileDiff.content.isBlank()) {
+                Text(
+                    stringResource(R.string.git_no_changes),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                fileDiff.content.lines().take(200).forEach { line ->
                     val color = when {
                         line.startsWith("+") -> StatusConnected
                         line.startsWith("-") -> StatusError
@@ -647,6 +719,14 @@ private fun CommitDialog(
                     Spacer(Modifier.width(6.dp))
                     Text(stringResource(R.string.git_generate_message))
                 }
+            }
+            generateError?.let {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
             Spacer(Modifier.height(8.dp))
             Row(
