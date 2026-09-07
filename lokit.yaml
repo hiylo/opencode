@@ -1,0 +1,17 @@
+# lokit configuration for OpenCode Android app
+# See: https://github.com/minios-linux/lokit
+#
+# yaml-language-server: $schema=https://raw.githubusercontent.com/minios-linux/lokit/refs/heads/master/lokit.schema.json
+
+source_lang: en
+
+languages: [zh-CN]
+
+provider:
+  id: copilot
+  model: gpt-4.1
+
+targets:
+  - name: OpenCode Android
+    format: android
+    to: app/src/main/res

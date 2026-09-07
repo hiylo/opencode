@@ -1,0 +1,77 @@
+*.iml
+.gradle
+/local.properties
+/.idea/
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# Android Studio
+*.apk
+*.ap_
+*.dex
+*.class
+bin/
+gen/
+out/
+
+# Gradle
+.gradle/
+build/
+
+# Local configuration file (sdk path, etc)
+local.properties
+
+# Log Files
+*.log
+
+# On-device model artifacts — not stored in the repository.
+# Models are distributed as GitHub Release assets and downloaded on first use.
+# Keep the directory so app code can reference it, but ignore the actual model files.
+app/src/main/assets/models/*.mnn
+app/src/main/assets/models/*.weight
+app/src/main/assets/models/tokenizer.txt
+
+# Stray root-level model copies
+/llm.mnn
+/llm.mnn.weight
+*.task
+/models/*.weight
+
+# Android Studio Navigation editor temp files
+.navigation/
+
+# Android Studio captures folder
+captures/
+
+# IntelliJ
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# Keystore files
+*.jks
+*.keystore
+app/keystore/
+
+# External native build folder
+.externalNativeBuild
+.cxx/
+
+# Version control
+vcs.xml
+
+# lint
+lint/
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+fastlane/test_output
+fastlane/readme.md
+app/src/main/assets/models/llm.mnn.json
