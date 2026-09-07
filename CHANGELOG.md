@@ -1,3 +1,7 @@
+<!--
+Copyright(c) 2016 - Present, Clouds Studio Holding Limited. All rights reserved.
+-->
+
 # Changelog
 
 All notable changes to this project are documented in this file.

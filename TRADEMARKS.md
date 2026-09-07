@@ -1,3 +1,7 @@
+<!--
+Copyright(c) 2016 - Present, Clouds Studio Holding Limited. All rights reserved.
+-->
+
 # OpenCode Trademark and Branding Policy
 
 The software source code is licensed under the license specified in

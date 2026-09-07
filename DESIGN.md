@@ -1,3 +1,7 @@
+<!--
+Copyright(c) 2016 - Present, Clouds Studio Holding Limited. All rights reserved.
+-->
+
 ---
 version: alpha
 name: OpenCode-Android-design-system

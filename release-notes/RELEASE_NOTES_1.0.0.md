@@ -1,3 +1,7 @@
+<!--
+Copyright(c) 2016 - Present, Clouds Studio Holding Limited. All rights reserved.
+-->
+
 # OpenCode v1.0.0 - Release Notes
 
 Initial release of the OpenCode Android client.

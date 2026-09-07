@@ -1,3 +1,7 @@
+<!--
+Copyright(c) 2016 - Present, Clouds Studio Holding Limited. All rights reserved.
+-->
+
 # Known Issues
 
 Known issues and items that still require physical-device verification for v1.0.0.
