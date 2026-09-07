@@ -54,6 +54,7 @@ import org.hiylo.opencode.domain.model.Session
 import org.hiylo.opencode.domain.model.SessionCategory
 import org.hiylo.opencode.ui.screens.chat.ChatScreen
 import org.hiylo.opencode.ui.screens.files.WorkspaceFilesScreen
+import org.hiylo.opencode.ui.screens.git.GitScreen
 import org.hiylo.opencode.ui.screens.home.HomeScreen
 import org.hiylo.opencode.ui.screens.about.AboutScreen
 import org.hiylo.opencode.ui.screens.sessions.SessionListScreen
@@ -711,6 +712,22 @@ fun NavGraph(
                                                 paneSessionId = childSessionId
                                                 paneOpenTerminal = false
                                             },
+                                            onOpenGit = {
+                                                val directory = eventReducer.sessions.value
+                                                    .find { it.id == sessionId }
+                                                    ?.directory
+                                                    .orEmpty()
+                                                navController.navigate(
+                                                    Screen.Git.createRoute(
+                                                        serverUrl = serverUrl,
+                                                        username = username,
+                                                        password = password,
+                                                        serverName = serverName,
+                                                        serverId = serverId,
+                                                        directory = directory,
+                                                    ),
+                                                )
+                                            },
                                             startInTerminalMode = entry.arguments?.getBoolean("openTerminal") ?: false,
                                         )
                                     }
@@ -860,6 +877,22 @@ fun NavGraph(
                         ),
                     )
                 },
+                onOpenGit = {
+                    val directory = eventReducer.sessions.value
+                        .find { it.id == sessionId }
+                        ?.directory
+                        .orEmpty()
+                    navController.navigate(
+                        Screen.Git.createRoute(
+                            serverUrl = serverUrl,
+                            username = username,
+                            password = password,
+                            serverName = serverName,
+                            serverId = serverId,
+                            directory = directory,
+                        ),
+                    )
+                },
                 onManageModels = {
                     navController.navigate(
                         Screen.ServerModelFilter.createRoute(
@@ -905,6 +938,20 @@ fun NavGraph(
             ),
         ) {
             WorkspaceFilesScreen(onNavigateBack = { navController.popBackStack() })
+        }
+
+        composable(
+            route = "git?serverUrl={serverUrl}&username={username}&password={password}&serverName={serverName}&serverId={serverId}&directory={directory}",
+            arguments = listOf(
+                navArgument("serverUrl") { type = NavType.StringType },
+                navArgument("username") { type = NavType.StringType },
+                navArgument("password") { type = NavType.StringType },
+                navArgument("serverName") { type = NavType.StringType },
+                navArgument("serverId") { type = NavType.StringType },
+                navArgument("directory") { type = NavType.StringType },
+            ),
+        ) {
+            GitScreen(onNavigateBack = { navController.popBackStack() })
         }
     }
 }

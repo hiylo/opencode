@@ -1070,6 +1070,7 @@ fun ChatScreen(
     onNavigateToChildSession: (sessionId: String) -> Unit = {},
     onOpenInWebView: () -> Unit = {},
     onOpenWorkspace: (directory: String) -> Unit = {},
+    onOpenGit: () -> Unit = {},
     onManageModels: () -> Unit = {},
     initialSharedAttachments: List<Uri> = emptyList(),
     onSharedAttachmentsConsumed: () -> Unit = {},
@@ -1146,6 +1147,7 @@ fun ChatScreen(
     val terminalTabs by viewModel.terminalTabs.collectAsState()
     val activeTerminalTabId by viewModel.activeTerminalTabId.collectAsState()
     val activeTerminalTab = terminalTabs.firstOrNull { it.id == activeTerminalTabId }
+    val isGitRepository by viewModel.isGitRepository.collectAsState()
     val terminalFontSizeSp by viewModel.terminalFontSizeSp.collectAsState()
     val terminalDrawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -1828,6 +1830,18 @@ fun ChatScreen(
                                     Icon(Icons.Default.Language, contentDescription = null)
                                 },
                             )
+                            if (isGitRepository) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.menu_git)) },
+                                    onClick = {
+                                        showMenu = false
+                                        onOpenGit()
+                                    },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.AccountTree, contentDescription = null)
+                                    },
+                                )
+                            }
                             HorizontalDivider(
                                 modifier = Modifier.padding(vertical = 4.dp),
                                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f),

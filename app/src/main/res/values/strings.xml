@@ -602,6 +602,7 @@
 
     <!-- Chat menu actions -->
     <string name="menu_open_in_web">Open in Web</string>
+    <string name="menu_git">Git</string>
     <string name="menu_workspace_files">Workspace files</string>
     <string name="workspace_files_title">Workspace files</string>
     <string name="workspace_download_file">Download file</string>
@@ -643,6 +644,43 @@ Tokens: ~%4$d -&gt; ~%5$d</string>
     <string name="chat_message_sent">Sent</string>
     <string name="chat_subagent_session">Subagent session</string>
     <string name="chat_subagent_read_only_description">Messages can’t be sent to a subagent session.</string>
+
+    <!-- Git screen -->
+    <string name="git_title">Git</string>
+    <string name="git_repository">Repository</string>
+    <string name="git_branch">Branch: %1$s</string>
+    <string name="git_clean">Clean</string>
+    <string name="git_changes_count">%1$d changed files</string>
+    <string name="git_changes">Changes</string>
+    <string name="git_no_changes">No changes</string>
+    <string name="git_commits">History</string>
+    <string name="git_no_commits">No commits yet</string>
+    <string name="git_commit">Commit</string>
+    <string name="git_push">Push</string>
+    <string name="git_pull">Pull</string>
+    <string name="git_checkout">Checkout</string>
+    <string name="git_new_branch">New branch</string>
+    <string name="git_commit_title">Commit changes</string>
+    <string name="git_commit_message_hint">Commit message</string>
+    <string name="git_new_branch_title">Create branch</string>
+    <string name="git_branch_name_hint">Branch name</string>
+    <string name="git_branches">Branches</string>
+    <string name="git_status_added">Added</string>
+    <string name="git_status_modified">Modified</string>
+    <string name="git_status_deleted">Deleted</string>
+    <string name="git_status_untracked">Untracked</string>
+    <string name="git_diff">Diff</string>
+    <string name="git_loading">Loading…</string>
+    <string name="git_load_failed">Could not load Git information</string>
+    <string name="git_not_repository">This project is not a Git repository.</string>
+    <string name="git_not_repository_desc">Git is only available for projects tracked by Git.</string>
+    <string name="git_operation_failed">Git operation failed</string>
+    <string name="git_operation_success">Done</string>
+    <string name="git_operation_in_progress">Working…</string>
+    <string name="git_confirm_commit">Commit</string>
+    <string name="git_generate_message">Generate</string>
+    <string name="git_no_remotes">No remotes configured</string>
+    <string name="git_confirm_create">Create</string>
 
     <!-- About Screen -->
     <string name="about_title">About</string>

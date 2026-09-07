@@ -90,6 +90,24 @@ sealed class Screen(val route: String) {
         }
     }
 
+    data object Git : Screen("git") {
+        fun createRoute(
+            serverUrl: String,
+            username: String,
+            password: String,
+            serverName: String,
+            serverId: String,
+            directory: String,
+        ): String {
+            return "git?serverUrl=${encodeNavigationArgument(serverUrl)}" +
+                "&username=${encodeNavigationArgument(username)}" +
+                "&password=${encodeNavigationArgument(password)}" +
+                "&serverName=${encodeNavigationArgument(serverName)}" +
+                "&serverId=${encodeNavigationArgument(serverId)}" +
+                "&directory=${encodeNavigationArgument(directory)}"
+        }
+    }
+
     data object ServerSettings : Screen("server_settings") {
         fun createRoute(
             serverUrl: String,

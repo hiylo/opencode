@@ -290,6 +290,9 @@ class ChatViewModel @Inject constructor(
     private val _modelNeedsDownload = MutableStateFlow(false)
     private val _modelDownloading = MutableStateFlow(false)
     private val _modelDownloadProgress = MutableStateFlow(0)
+    /** Whether the current project is a Git repository (Project.vcs == "git"). */
+    private val _isGitRepository = MutableStateFlow(false)
+    val isGitRepository: StateFlow<Boolean> = _isGitRepository
     /** Monotonic token invalidating in-flight suggestion generations when the conversation changes. */
     private var suggestionsGeneration = 0L
     private val _allProviders = MutableStateFlow<List<ProviderInfo>>(emptyList())
@@ -744,6 +747,7 @@ class ChatViewModel @Inject constructor(
                 children.forEach { queue.addLast(it.id) }
             }
             eventReducer.setSessions(serverId, sessions)
+            refreshGitRepositoryState()
         } catch (e: Exception) {
             e.rethrowCancellation()
             Log.e(TAG, "Failed to load session info", e)
@@ -1188,6 +1192,34 @@ class ChatViewModel @Inject constructor(
 
     /** Get the session directory for building file:// URLs */
     fun getSessionDirectory(): String? = sessionDirectory
+
+    /**
+     * 刷新当前项目是否为 Git 仓库的状态。
+     * 依据 [Project.vcs] 是否为 "git" 判定，优先按会话目录匹配 [OpenCodeApi.listProjects] 结果，
+     * 未匹配时回退到 [OpenCodeApi.getCurrentProject]。
+     */
+    private suspend fun refreshGitRepositoryState() {
+        val directory = sessionDirectory
+        if (directory.isNullOrBlank()) {
+            _isGitRepository.value = false
+            return
+        }
+        try {
+            val projects = api.listProjects(conn)
+            val normalized = directory.trimEnd('/')
+            val project = projects.firstOrNull {
+                it.worktree.trimEnd('/') == normalized ||
+                    it.path.trimEnd('/') == normalized ||
+                    it.directory?.trimEnd('/') == normalized
+            }
+            val vcs = project?.vcs
+                ?: runCatching { api.getCurrentProject(conn).vcs }.getOrNull()
+            _isGitRepository.value = vcs == "git"
+        } catch (e: Exception) {
+            e.rethrowCancellation()
+            if (BuildConfig.DEBUG) Log.d(TAG, "Failed to resolve git repository state: ${e.message}")
+        }
+    }
 
     fun sendMessage(text: String, attachments: List<PromptPart> = emptyList()): Boolean {
         if (text.isBlank() && attachments.isEmpty()) return false
