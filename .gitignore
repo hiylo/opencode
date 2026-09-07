@@ -75,3 +75,6 @@ fastlane/screenshots
 fastlane/test_output
 fastlane/readme.md
 app/src/main/assets/models/llm.mnn.json
+
+# Kotlin/Gradle 构建缓存
+.kotlin/

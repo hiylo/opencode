@@ -9,6 +9,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-09-08
+
+### Added
+- **Git** — 对话页 ⋮ 菜单新增 Git 入口（仅当项目为 git 仓库时显示），独立 Git 页支持：
+  - 仓库选择器（顶层仓库 + 子模块 + 嵌套仓库）、当前分支与工作区状态
+  - 变更文件列表（含未跟踪文件内容）、提交历史（点击展开文件变更 + 逐文件 diff）
+  - commit / push / pull（多 remote 可选）/ 切换分支 / 新建分支
+  - AI 生成 commit message（优先云端 LLM、回退端侧模型，参考最近提交风格）
+  - 常驻 PTY 会话复用，操作秒回
+- **设计对齐**：会话状态彩色徽章、状态色收敛到语义 token、诊断页圆角/AMOLED 描边统一。
+
+### Changed
+- 端侧模型下载源从 GitHub Releases 切换为 **ModelScope**（国内直连更快），逐文件下载并校验 SHA-256；运行时优先从打包 assets 解压，无打包时走 ModelScope。
+- 设置页 LLM「测试连接」改为发送真实单轮对话并回显模型回复，报错分类友好提示（中英双语）。
+
+### Fixed
+- 端侧模型已打包进 assets 但运行时从不使用（此前永远提示下载）。
+- Git 数据「不是仓库」误判、PTY 命令发早被吞、并发操作互相覆盖导致的超时/空数据。
+
 ## [1.0.0] - 2026-09-07
 
 ### Added
