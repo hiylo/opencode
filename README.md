@@ -38,6 +38,7 @@ manage sessions — all from a mobile-first UI.
   **Test connection** button sends a real single-turn conversation and shows the model's reply
 - **Conversation links** — links pointing to the connected server open inside an in-app WebView
   (with Basic Auth); all other links keep the system browser, so credentials never leak
+- **Git** — a built-in Git page (from the chat ⋮ menu when the project is a repository) with branch/status, change list and diffs, commit history, and commit/push/pull/checkout/branch operations — plus AI-generated commit messages (cloud LLM with on-device fallback)
 - **Accent color** — six brand accent palettes, applied app-wide (light/dark/AMOLED) and synced
 - **Workspace files** — browse project folders, preview highlighted text, Markdown and images, and
   download files
