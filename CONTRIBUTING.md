@@ -1,3 +1,7 @@
+<!--
+Copyright(c) 2016 - Present, Clouds Studio Holding Limited. All rights reserved.
+-->
+
 # Contributing to OpenCode Android
 
 Thanks for your interest in contributing! Please take a moment to review this guide.
@@ -5,7 +9,8 @@ Thanks for your interest in contributing! Please take a moment to review this gu
 ## Code of Conduct
 
 Be respectful and constructive. Harassment, bullying, or any form of discrimination will not be
-tolerated. If you observe unacceptable behavior, report it to the maintainers.
+tolerated. See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for the full policy. If you observe
+unacceptable behavior, report it to the maintainers.
 
 ## Reporting Bugs
 

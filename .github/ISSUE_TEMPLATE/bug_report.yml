@@ -1,0 +1,65 @@
+name: Bug report
+description: Report a bug or unexpected behavior
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please search the [issue tracker](https://github.com/hiylo/opencode/issues)
+        first to avoid duplicates.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of the bug.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Ordered steps to reproduce the issue.
+      placeholder: |
+        1. Open the app
+        2. Connect to a server
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs. actual behavior
+      description: What did you expect to happen, and what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: app-version
+    attributes:
+      label: App version
+      description: The OpenCode Android version (e.g. v1.0.0).
+      placeholder: v1.0.0
+    validations:
+      required: true
+  - type: input
+    id: server-version
+    attributes:
+      label: OpenCode server version
+      description: The version of the OpenCode server you are connected to.
+      placeholder: e.g. opencode 0.x
+  - type: input
+    id: device
+    attributes:
+      label: Device model and Android version
+      description: e.g. Pixel 8, Android 14.
+      placeholder: Pixel 8, Android 14
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Diagnostic log
+      description: |
+        If possible, attach a diagnostic log export. Logs may contain connection details and
+        snippets of your conversation — remove anything sensitive before uploading.
+    validations:
+      required: false
