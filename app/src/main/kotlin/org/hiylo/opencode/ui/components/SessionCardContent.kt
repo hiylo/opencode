@@ -14,7 +14,6 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
@@ -27,10 +26,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -39,6 +38,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
@@ -53,6 +53,8 @@ import org.hiylo.opencode.R
 import org.hiylo.opencode.domain.model.Session
 import org.hiylo.opencode.domain.model.SessionCategory
 import org.hiylo.opencode.domain.model.SessionStatus
+import org.hiylo.opencode.ui.theme.StatusConnected
+import org.hiylo.opencode.ui.theme.StatusError
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -88,6 +90,11 @@ fun SessionCardContent(
     }
     val accent = category?.let { sessionCategoryColor(it.color) }
         ?: MaterialTheme.colorScheme.primary
+    val statusBadge: Pair<String, Color>? = when (status) {
+        SessionStatus.Busy -> stringResource(R.string.session_status_busy) to StatusConnected
+        is SessionStatus.Retry -> stringResource(R.string.sessions_retrying) to StatusError
+        SessionStatus.Idle -> null
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth(),
@@ -184,14 +191,6 @@ fun SessionCardContent(
                         modifier = Modifier.size(15.dp),
                     )
                 }
-                if (status is SessionStatus.Retry) {
-                    Icon(
-                        Icons.Default.Refresh,
-                        contentDescription = stringResource(R.string.sessions_retrying),
-                        tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(15.dp),
-                    )
-                }
                 Text(
                     text = session.title?.takeIf(String::isNotBlank) ?: stringResource(R.string.session_untitled),
                     modifier = Modifier.weight(1f),
@@ -199,22 +198,8 @@ fun SessionCardContent(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                if (isBusy) {
-                    val workingColor = category?.let { sessionCategoryColor(it.color) }
-                        ?: MaterialTheme.colorScheme.tertiary
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        SessionWorkingDots(color = workingColor)
-                        Text(
-                            text = stringResource(R.string.sessions_working),
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                color = workingColor,
-                                fontWeight = FontWeight.Medium,
-                            ),
-                        )
-                    }
+                if (statusBadge != null) {
+                    SessionStatusBadge(label = statusBadge.first, color = statusBadge.second)
                 }
             }
             Spacer(Modifier.height(2.dp))
@@ -245,7 +230,7 @@ fun SessionCardContent(
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 11.sp,
-                                color = Color(0xFF4CAF50),
+                                color = StatusConnected,
                             ),
                         )
                     }
@@ -255,7 +240,7 @@ fun SessionCardContent(
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 11.sp,
-                                color = Color(0xFFE53935),
+                                color = StatusError,
                             ),
                         )
                     }
@@ -300,43 +285,35 @@ fun SessionCardContent(
     }
 }
 
+/**
+ * 会话状态彩色徽章：小圆角背景 + 状态色圆点 + 状态色文字。
+ *
+ * @param label 状态文案。
+ * @param color 状态语义色。
+ */
 @Composable
-private fun SessionWorkingDots(color: Color) {
-    val transition = rememberInfiniteTransition(label = "session_working_dots")
-    val scales = (0..2).map { index ->
-        transition.animateFloat(
-            initialValue = 0.4f,
-            targetValue = 0.4f,
-            animationSpec = infiniteRepeatable(
-                animation = keyframes {
-                    durationMillis = 1_200
-                    val offset = index * 150
-                    0.4f at offset
-                    1f at 300 + offset
-                    0.4f at 600 + offset
-                    0.4f at 1_200
-                },
-                repeatMode = RepeatMode.Restart,
-            ),
-            label = "session_working_dot_$index",
-        )
-    }
+private fun SessionStatusBadge(
+    label: String,
+    color: Color,
+) {
     Row(
-        modifier = Modifier.padding(horizontal = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(color.copy(alpha = 0.14f))
+            .padding(horizontal = 6.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        scales.forEach { scale ->
-            Box(
-                modifier = Modifier
-                    .size(4.dp)
-                    .graphicsLayer {
-                        scaleX = scale.value
-                        scaleY = scale.value
-                        alpha = 0.35f + 0.65f * ((scale.value - 0.4f) / 0.6f)
-                    }
-                    .background(color, RoundedCornerShape(4.dp)),
-            )
-        }
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(color),
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+            color = color,
+        )
     }
 }

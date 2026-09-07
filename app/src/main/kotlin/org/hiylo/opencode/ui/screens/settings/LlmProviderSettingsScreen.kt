@@ -37,7 +37,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -46,6 +45,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import org.hiylo.opencode.R
+import org.hiylo.opencode.ui.theme.StatusConnected
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Visibility
@@ -179,7 +179,7 @@ fun LlmProviderSettingsScreen(
                 Text(
                     text = it.message,
                     modifier = Modifier.padding(vertical = 8.dp),
-                    color = if (it.ok) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+                    color = if (it.ok) StatusConnected else MaterialTheme.colorScheme.error,
                 )
             }
         }

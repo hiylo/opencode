@@ -19,7 +19,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ContentCopy
@@ -73,6 +72,7 @@ import kotlinx.coroutines.withContext
 import org.hiylo.opencode.ui.components.appPopupBorder
 import org.hiylo.opencode.ui.components.appPopupContainerColor
 import org.hiylo.opencode.ui.components.isAmoledTheme
+import org.hiylo.opencode.ui.components.AppCardShape
 import org.hiylo.opencode.ui.components.AppDialog
 import org.hiylo.opencode.ui.components.AppPrimaryButton
 import org.hiylo.opencode.ui.components.AppSecondaryButton
@@ -205,9 +205,9 @@ fun DiagnosticsScreen(
             Surface(
                 onClick = { showLevelDialog = true },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-                shape = RoundedCornerShape(16.dp),
+                shape = AppCardShape,
                 color = if (isAmoled) Color.Black else MaterialTheme.colorScheme.surfaceContainer,
-                border = if (isAmoled) BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant) else null,
+                border = if (isAmoled) BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)) else null,
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
@@ -256,11 +256,11 @@ fun DiagnosticsScreen(
                     items(entries.asReversed()) { entry ->
                         Card(
                             modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(14.dp),
+                            shape = AppCardShape,
                             colors = CardDefaults.cardColors(
                                 containerColor = if (isAmoled) Color.Black else MaterialTheme.colorScheme.surfaceContainer,
                             ),
-                            border = if (isAmoled) BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant) else null,
+                            border = if (isAmoled) BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)) else null,
                         ) {
                             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text(
