@@ -531,6 +531,26 @@
     <string name="server_settings_search_placeholder">Search models</string>
     <string name="server_settings_empty">No models found</string>
     <string name="server_settings_load_error">Failed to load models</string>
+    <string name="server_settings_add_provider">Add provider</string>
+    <string name="server_settings_edit_provider">Edit provider</string>
+    <string name="server_settings_provider_base_url">Base URL</string>
+    <string name="server_settings_provider_models">Models</string>
+    <string name="server_settings_add_model">Add model</string>
+    <string name="server_settings_remove_model">Remove model</string>
+    <string name="server_settings_provider_name">Provider name</string>
+    <string name="server_settings_provider_id">Provider ID</string>
+    <string name="server_settings_provider_model_id">Model ID</string>
+    <string name="server_settings_provider_model_name">Model name</string>
+    <string name="server_settings_basic_info">Basic information</string>
+    <string name="server_settings_provider_model">Model</string>
+    <string name="server_settings_provider_saved">Provider saved</string>
+    <string name="server_settings_provider_removed">Provider removed</string>
+    <string name="server_settings_provider_save_failed">Failed to save provider</string>
+    <string name="server_settings_provider_remove_failed">Failed to remove provider</string>
+    <string name="server_settings_provider_initial_models">Initial models</string>
+    <string name="server_settings_provider_initial_models_hint">One per line: model-id=name</string>
+    <string name="server_settings_delete_provider">Delete provider</string>
+    <string name="server_settings_save">Save</string>
 
     <!-- Common -->
     <string name="loading">Loading…</string>
@@ -683,6 +703,15 @@ Tokens: ~%4$d -&gt; ~%5$d</string>
     <string name="git_generate_no_model">On-device model not downloaded, unable to generate</string>
     <string name="git_no_remotes">No remotes configured</string>
     <string name="git_confirm_create">Create</string>
+    <string name="git_fetch">Fetch</string>
+    <string name="git_stash">Stash changes</string>
+    <string name="git_stash_pop">Pop stash</string>
+    <string name="git_tags">Tags</string>
+    <string name="git_no_tags">No tags</string>
+    <string name="git_tag_name_hint">Tag name</string>
+    <string name="git_load_more">Load more</string>
+    <string name="git_ahead_count">%1$d unpushed commits</string>
+    <string name="git_commit_selected">Only %1$d selected files will be committed</string>
 
     <!-- About Screen -->
     <string name="about_title">About</string>
@@ -776,4 +805,46 @@ Tokens: ~%4$d -&gt; ~%5$d</string>
     <string name="sync_now">Sync now</string>
     <string name="sync_disconnect">Disconnect sync</string>
     <string name="sync_privacy_notice">Messages, drafts, logs, provider tokens, local-runtime credentials, and sync credentials are never uploaded. Server passwords are included only when encrypted password sync is enabled.</string>
+
+    <!-- Server Management -->
+    <string name="server_mgmt_title">Server management</string>
+    <string name="server_mgmt_basic_info">Service information</string>
+    <string name="server_mgmt_system_info">System information</string>
+    <string name="server_mgmt_config">Server config</string>
+    <string name="server_mgmt_version">Version</string>
+    <string name="server_mgmt_active_sessions">Active sessions</string>
+    <string name="server_mgmt_sessions_value">%1$d active</string>
+    <string name="server_mgmt_sessions_busy_value">%1$d active · %2$d busy</string>
+    <string name="server_mgmt_memory">Memory</string>
+    <string name="server_mgmt_disk">Disk</string>
+    <string name="server_mgmt_load">Load average</string>
+    <string name="server_mgmt_unknown">Unknown</string>
+    <string name="server_mgmt_default_model">Default model</string>
+    <string name="server_mgmt_default_model_hint">e.g. provider/model</string>
+    <string name="server_mgmt_default_agent">Default agent</string>
+    <string name="server_mgmt_default_agent_hint">e.g. build</string>
+    <string name="server_mgmt_save">Save</string>
+    <string name="server_mgmt_restart">Restart server</string>
+    <string name="server_mgmt_restarting">Restarting…</string>
+    <string name="server_mgmt_restart_confirm_title">Restart server?</string>
+    <string name="server_mgmt_restart_confirm_message">This will restart the OpenCode server process. Active sessions may be interrupted.</string>
+    <string name="server_mgmt_confirm">Confirm</string>
+    <string name="server_mgmt_refresh">Refresh</string>
+    <string name="chat_regenerate">Regenerate</string>
+    <string name="chat_message_regenerated">Message regenerated</string>
+    <string name="chat_message_regenerate_failed">Failed to regenerate</string>
+    <string name="chat_edit_message">Edit</string>
+    <string name="chat_summarize">Summarize</string>
+    <string name="chat_summarize_session">Summarize conversation</string>
+    <string name="chat_summary_title">Summary</string>
+    <string name="chat_summary_generating">Summarizing…</string>
+    <string name="chat_summary_failed">Failed to summarize</string>
+    <string name="chat_summary_no_model">No model available to summarize</string>
+
+    <!-- File editing -->
+    <string name="file_edit">Edit</string>
+    <string name="file_save">Save</string>
+    <string name="file_cancel">Cancel</string>
+    <string name="file_saved">File saved</string>
+    <string name="file_save_failed">Failed to save file</string>
 </resources>

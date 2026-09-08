@@ -379,8 +379,8 @@
     <string name="chat_terminal_clear">清除</string>
     <string name="chat_terminal_connect_failed">终端打开失败</string>
     <string name="chat_terminal_tap_keyboard">点击打开键盘</string>
-    <string name="server_settings_providers">提供方</string>
-    <string name="server_settings_providers_desc">为此服务器启用或禁用提供方</string>
+    <string name="server_settings_providers">服务商</string>
+    <string name="server_settings_providers_desc">为此服务器启用或禁用服务商</string>
     <string name="server_settings_providers_connected">已连接</string>
     <string name="server_settings_providers_available">可用</string>
     <string name="server_settings_provider_connected">已连接</string>
@@ -391,8 +391,28 @@
     <string name="server_settings_provider_source_other">来源：其他</string>
     <string name="server_settings_provider_env_connected">通过环境变量连接</string>
     <string name="server_settings_provider_unavailable">不可用</string>
+    <string name="server_settings_add_provider">添加服务商</string>
+    <string name="server_settings_edit_provider">编辑服务商</string>
+    <string name="server_settings_provider_base_url">Base URL</string>
+    <string name="server_settings_provider_models">模型</string>
+    <string name="server_settings_add_model">添加模型</string>
+    <string name="server_settings_remove_model">移除模型</string>
+    <string name="server_settings_provider_name">服务商名称</string>
+    <string name="server_settings_provider_id">服务商 ID</string>
+    <string name="server_settings_provider_model_id">模型 ID</string>
+    <string name="server_settings_provider_model_name">模型名称</string>
+    <string name="server_settings_basic_info">基本信息</string>
+    <string name="server_settings_provider_model">模型</string>
+    <string name="server_settings_provider_saved">服务商已保存</string>
+    <string name="server_settings_provider_removed">服务商已删除</string>
+    <string name="server_settings_provider_save_failed">服务商保存失败</string>
+    <string name="server_settings_provider_remove_failed">服务商删除失败</string>
+    <string name="server_settings_provider_initial_models">初始模型</string>
+    <string name="server_settings_provider_initial_models_hint">每行一个：模型ID=名称</string>
+    <string name="server_settings_delete_provider">删除服务商</string>
+    <string name="server_settings_save">保存</string>
     <string name="server_settings_connect_provider">连接 %1$s</string>
-    <string name="server_settings_no_connect_methods">此提供方没有可用的连接方式</string>
+    <string name="server_settings_no_connect_methods">此服务商没有可用的连接方式</string>
     <string name="server_settings_api_key_title">%1$s 的 API 密钥</string>
     <string name="server_settings_api_key_placeholder">粘贴 API 密钥</string>
     <string name="server_settings_oauth_title">连接 %1$s</string>
@@ -740,4 +760,55 @@
     <string name="git_generate_no_model">端侧模型未下载，无法生成</string>
     <string name="git_no_remotes">未配置远端仓库</string>
     <string name="git_confirm_create">创建</string>
+    <string name="git_fetch">获取</string>
+    <string name="git_stash">暂存变更</string>
+    <string name="git_stash_pop">恢复暂存</string>
+    <string name="git_tags">标签</string>
+    <string name="git_no_tags">暂无标签</string>
+    <string name="git_tag_name_hint">标签名称</string>
+    <string name="git_load_more">加载更多</string>
+    <string name="git_ahead_count">%1$d 个未推送提交</string>
+    <string name="git_commit_selected">将仅提交已选中的 %1$d 个文件</string>
+
+    <!-- Server Management -->
+    <string name="server_mgmt_title">服务器管理</string>
+    <string name="server_mgmt_basic_info">服务信息</string>
+    <string name="server_mgmt_system_info">系统信息</string>
+    <string name="server_mgmt_config">服务配置</string>
+    <string name="server_mgmt_version">版本</string>
+    <string name="server_mgmt_active_sessions">活跃会话</string>
+    <string name="server_mgmt_sessions_value">%1$d 个活跃</string>
+    <string name="server_mgmt_sessions_busy_value">%1$d 个活跃 · %2$d 个运行中</string>
+    <string name="server_mgmt_memory">内存</string>
+    <string name="server_mgmt_disk">磁盘</string>
+    <string name="server_mgmt_load">负载</string>
+    <string name="server_mgmt_unknown">未知</string>
+    <string name="server_mgmt_default_model">默认模型</string>
+    <string name="server_mgmt_default_model_hint">例如 provider/model</string>
+    <string name="server_mgmt_default_agent">默认 Agent</string>
+    <string name="server_mgmt_default_agent_hint">例如 build</string>
+    <string name="server_mgmt_save">保存</string>
+    <string name="server_mgmt_restart">重启服务</string>
+    <string name="server_mgmt_restarting">正在重启…</string>
+    <string name="server_mgmt_restart_confirm_title">重启服务？</string>
+    <string name="server_mgmt_restart_confirm_message">这将重启 OpenCode 服务进程，正在进行的会话可能会中断。</string>
+    <string name="server_mgmt_confirm">确认</string>
+    <string name="server_mgmt_refresh">刷新</string>
+    <string name="chat_regenerate">重新生成</string>
+    <string name="chat_message_regenerated">已重新生成</string>
+    <string name="chat_message_regenerate_failed">重新生成失败</string>
+    <string name="chat_edit_message">编辑</string>
+    <string name="chat_summarize">总结</string>
+    <string name="chat_summarize_session">总结对话</string>
+    <string name="chat_summary_title">总结</string>
+    <string name="chat_summary_generating">正在总结…</string>
+    <string name="chat_summary_failed">总结失败，请重试</string>
+    <string name="chat_summary_no_model">端侧模型未下载，无法总结</string>
+
+    <!-- File editing -->
+    <string name="file_edit">编辑</string>
+    <string name="file_save">保存</string>
+    <string name="file_cancel">取消</string>
+    <string name="file_saved">文件已保存</string>
+    <string name="file_save_failed">文件保存失败</string>
 </resources>
