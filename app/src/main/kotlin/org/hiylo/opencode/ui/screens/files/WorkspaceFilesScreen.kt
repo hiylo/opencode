@@ -18,9 +18,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
@@ -34,6 +37,7 @@ import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.PictureAsPdf
@@ -42,10 +46,14 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -107,9 +115,14 @@ fun WorkspaceFilesScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val wordWrap by viewModel.wordWrap.collectAsState()
+    val editing by viewModel.editing.collectAsState()
+    val editContent by viewModel.editContent.collectAsState()
+    val saveState by viewModel.saveState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val fileSavedMessage = stringResource(R.string.workspace_file_saved)
     val fileSaveFailedMessage = stringResource(R.string.workspace_file_save_failed)
+    val editSavedMessage = stringResource(R.string.file_saved)
+    val editSaveFailedMessage = stringResource(R.string.file_save_failed)
     val previewBytes = remember(state.preview) {
         state.preview?.content?.let(::workspaceFileBytes)
     }
@@ -125,7 +138,11 @@ fun WorkspaceFilesScreen(
         if (uri != null) viewModel.savePreview(uri)
     }
     val navigateBack = {
-        if (!viewModel.navigateUp()) onNavigateBack()
+        if (editing) {
+            viewModel.cancelEdit()
+        } else if (!viewModel.navigateUp()) {
+            onNavigateBack()
+        }
     }
 
     BackHandler(onBack = navigateBack)
@@ -134,6 +151,13 @@ fun WorkspaceFilesScreen(
             snackbarHostState.showSnackbar(
                 if (saved) fileSavedMessage else fileSaveFailedMessage,
             )
+        }
+    }
+    LaunchedEffect(saveState.status) {
+        when (saveState.status) {
+            FileSaveStatus.Saved -> snackbarHostState.showSnackbar(editSavedMessage)
+            FileSaveStatus.Error -> snackbarHostState.showSnackbar(saveState.message ?: editSaveFailedMessage)
+            else -> Unit
         }
     }
 
@@ -175,32 +199,39 @@ fun WorkspaceFilesScreen(
                 },
                 actions = {
                     val preview = state.preview
-                    if (isTextPreview) {
-                        IconButton(onClick = { viewModel.setWordWrap(!wordWrap) }) {
-                            Icon(
-                                Icons.AutoMirrored.Filled.WrapText,
-                                contentDescription = stringResource(R.string.workspace_word_wrap),
-                                tint = if (wordWrap) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                            )
+                    if (!editing) {
+                        if (isTextPreview) {
+                            IconButton(onClick = { viewModel.setWordWrap(!wordWrap) }) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.WrapText,
+                                    contentDescription = stringResource(R.string.workspace_word_wrap),
+                                    tint = if (wordWrap) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                )
+                            }
                         }
-                    }
-                    if (isMarkdownPreview) {
-                        IconButton(onClick = { renderMarkdown = !renderMarkdown }) {
-                            Icon(
-                                imageVector = if (renderMarkdown) Icons.Default.Code else Icons.Default.Preview,
-                                contentDescription = stringResource(
-                                    if (renderMarkdown) R.string.workspace_markdown_raw else R.string.workspace_markdown_preview,
-                                ),
-                            )
+                        if (isMarkdownPreview) {
+                            IconButton(onClick = { renderMarkdown = !renderMarkdown }) {
+                                Icon(
+                                    imageVector = if (renderMarkdown) Icons.Default.Code else Icons.Default.Preview,
+                                    contentDescription = stringResource(
+                                        if (renderMarkdown) R.string.workspace_markdown_raw else R.string.workspace_markdown_preview,
+                                    ),
+                                )
+                            }
                         }
-                    }
-                    if (preview != null && previewBytes != null) {
-                        IconButton(onClick = { saveLauncher.launch(preview.node.name) }) {
-                            Icon(Icons.Default.Download, contentDescription = stringResource(R.string.workspace_download_file))
+                        if (preview != null && previewBytes != null) {
+                            IconButton(onClick = { saveLauncher.launch(preview.node.name) }) {
+                                Icon(Icons.Default.Download, contentDescription = stringResource(R.string.workspace_download_file))
+                            }
+                        }
+                        if (isTextPreview) {
+                            IconButton(onClick = viewModel::startEdit) {
+                                Icon(Icons.Default.Edit, contentDescription = stringResource(R.string.file_edit))
+                            }
                         }
                     }
                 },
@@ -223,6 +254,14 @@ fun WorkspaceFilesScreen(
                         TextButton(onClick = viewModel::retry) { Text(stringResource(R.string.retry)) }
                     }
                 }
+                editing -> WorkspaceFileEditor(
+                    content = editContent.orEmpty(),
+                    saving = saveState.status == FileSaveStatus.Saving,
+                    onContentChange = viewModel::updateEditContent,
+                    onSave = viewModel::saveEdit,
+                    onCancel = viewModel::cancelEdit,
+                    modifier = Modifier.fillMaxSize(),
+                )
                 state.preview != null -> WorkspaceFileContent(
                     preview = state.preview!!,
                     bytes = previewBytes,
@@ -345,6 +384,55 @@ private fun WorkspaceFileContent(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun WorkspaceFileEditor(
+    content: String,
+    saving: Boolean,
+    onContentChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = stringResource(R.string.file_edit),
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.weight(1f),
+            )
+            OutlinedButton(onClick = onCancel, enabled = !saving) {
+                Text(stringResource(R.string.file_cancel))
+            }
+            Button(onClick = onSave, enabled = !saving) {
+                if (saving) {
+                    CircularProgressIndicator(
+                        modifier = Modifier
+                            .height(16.dp)
+                            .width(16.dp),
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    Text(stringResource(R.string.file_save))
+                }
+            }
+        }
+        OutlinedTextField(
+            value = content,
+            onValueChange = onContentChange,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+        )
     }
 }
 

@@ -21,6 +21,7 @@ import org.hiylo.opencode.data.api.FileNode
 import org.hiylo.opencode.data.api.OpenCodeApi
 import org.hiylo.opencode.data.api.ServerConnection
 import org.hiylo.opencode.data.repository.SettingsRepository
+import org.hiylo.opencode.data.shell.ServerShellRegistry
 import org.hiylo.opencode.logging.AppLogger as Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -49,6 +50,15 @@ data class WorkspaceFilesUiState(
     val preview: WorkspaceFilePreview? = null,
     val isLoading: Boolean = true,
     val error: String? = null,
+)
+
+/** 文件保存状态的阶段。 */
+enum class FileSaveStatus { Idle, Saving, Saved, Error }
+
+/** 文件编辑保存状态：阶段 + 失败时的错误信息。 */
+data class FileSaveState(
+    val status: FileSaveStatus = FileSaveStatus.Idle,
+    val message: String? = null,
 )
 
 internal enum class WorkspaceFileKind {
@@ -136,14 +146,16 @@ class WorkspaceFilesViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val api: OpenCodeApi,
     private val settingsRepository: SettingsRepository,
+    private val shellRegistry: ServerShellRegistry,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
     private val connection = ServerConnection.from(
         url = savedStateHandle.get<String>("serverUrl").orEmpty(),
         username = savedStateHandle.get<String>("username").orEmpty().ifBlank { "opencode" },
-        password = savedStateHandle.get<String>("password").orEmpty().ifEmpty { null },
+        password = savedStateHandle.get<String>("password").orEmpty().ifBlank { null },
     )
     private val directory = savedStateHandle.get<String>("directory").orEmpty()
+    private val serverId = savedStateHandle.get<String>("serverId").orEmpty().ifBlank { connection.baseUrl }
     private val _uiState = MutableStateFlow(WorkspaceFilesUiState(directory = directory))
     val uiState = _uiState.asStateFlow()
     private val _saveResults = MutableSharedFlow<Boolean>(extraBufferCapacity = 1)
@@ -153,7 +165,27 @@ class WorkspaceFilesViewModel @Inject constructor(
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = false,
     )
+    private val _editing = MutableStateFlow(false)
+    val editing = _editing.asStateFlow()
+    private val _editContent = MutableStateFlow<String?>(null)
+    val editContent = _editContent.asStateFlow()
+    private val _saveState = MutableStateFlow(FileSaveState())
+    val saveState = _saveState.asStateFlow()
     private var loadJob: Job? = null
+
+    /** 连接级共享 PTY 会话：按 server 复用，与 Git 页、服务器管理页共用同一条 PTY。 */
+    private var ptySessionAcquired = false
+    private val ptySession by lazy {
+        ptySessionAcquired = true
+        shellRegistry.acquire(serverId, api, connection, directory)
+    }
+
+    override fun onCleared() {
+        if (ptySessionAcquired) {
+            shellRegistry.release(serverId)
+        }
+        super.onCleared()
+    }
 
     init {
         loadDirectory("")
@@ -230,6 +262,74 @@ class WorkspaceFilesViewModel @Inject constructor(
             _saveResults.emit(saved)
         }
     }
+
+    /**
+     * 进入编辑模式：把当前文本类预览内容填入编辑框。二进制/图片文件不提供编辑。
+     */
+    fun startEdit() {
+        val preview = _uiState.value.preview ?: return
+        if (!isTextPreview(preview)) return
+        _editContent.value = preview.content.content
+        _editing.value = true
+        _saveState.value = FileSaveState()
+    }
+
+    /**
+     * 更新正在编辑的文本内容。
+     *
+     * @param text 编辑框最新内容
+     */
+    fun updateEditContent(text: String) {
+        _editContent.value = text
+    }
+
+    /** 取消编辑，丢弃未保存的修改。 */
+    fun cancelEdit() {
+        _editing.value = false
+        _editContent.value = null
+        _saveState.value = FileSaveState()
+    }
+
+    /**
+     * 保存编辑内容：将文本 base64 编码后通过共享 PTY 写回服务器，成功后重新读取刷新预览。
+     */
+    fun saveEdit() {
+        val preview = _uiState.value.preview ?: return
+        val content = _editContent.value ?: return
+        if (_saveState.value.status == FileSaveStatus.Saving) return
+        viewModelScope.launch {
+            _saveState.value = FileSaveState(status = FileSaveStatus.Saving)
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val encoded = Base64.getEncoder().encodeToString(content.toByteArray(Charsets.UTF_8))
+                    val command = "printf '%s' '$encoded' | base64 -d > ${shellQuote(preview.node.path)}"
+                    ptySession.runCommandResult(command)
+                }
+            }
+            result.onSuccess { r ->
+                if (r.exitCode == 0) {
+                    _editing.value = false
+                    _editContent.value = null
+                    _saveState.value = FileSaveState(status = FileSaveStatus.Saved)
+                    open(preview.node)
+                } else {
+                    _saveState.value = FileSaveState(status = FileSaveStatus.Error, message = r.output.ifBlank { null })
+                }
+            }.onFailure { e ->
+                Log.e(TAG, "Failed to save workspace file", e)
+                _saveState.value = FileSaveState(status = FileSaveStatus.Error, message = e.message)
+            }
+        }
+    }
+
+    /** 判断预览是否为可编辑的文本类文件（排除二进制与图片）。 */
+    private fun isTextPreview(preview: WorkspaceFilePreview): Boolean {
+        if (workspaceFileBytes(preview.content) == null) return false
+        return !workspaceFileMimeType(preview.node, preview.content).startsWith("image/")
+    }
+
+    /** shell 单引号转义：包裹路径，内部单引号按 `'\''` 转义。 */
+    private fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
 
     private companion object {
         const val TAG = "WorkspaceFilesVM"
