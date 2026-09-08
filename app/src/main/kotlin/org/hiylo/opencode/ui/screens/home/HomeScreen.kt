@@ -139,6 +139,7 @@ fun HomeScreen(
     onNavigateToSessions: (serverUrl: String, username: String, password: String, serverName: String, serverId: String) -> Unit = { _, _, _, _, _ -> },
     onNavigateToCrossServerSessions: () -> Unit = {},
     onNavigateToServerSettings: (serverUrl: String, username: String, password: String, serverName: String, serverId: String) -> Unit = { _, _, _, _, _ -> },
+    onNavigateToServerManagement: (serverUrl: String, username: String, password: String, serverName: String, serverId: String) -> Unit = { _, _, _, _, _ -> },
     onNavigateToSettings: () -> Unit = {},
     onNavigateToAbout: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
@@ -302,6 +303,15 @@ fun HomeScreen(
                                 },
                                 onServerSettings = {
                                     onNavigateToServerSettings(
+                                        server.url,
+                                        server.username,
+                                        server.password ?: "",
+                                        server.displayName,
+                                        server.id
+                                    )
+                                },
+                                onManageServer = {
+                                    onNavigateToServerManagement(
                                         server.url,
                                         server.username,
                                         server.password ?: "",
@@ -518,6 +528,7 @@ private fun ServerCard(
     onDisconnect: () -> Unit,
     onOpenSessions: () -> Unit,
     onServerSettings: () -> Unit,
+    onManageServer: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -599,6 +610,18 @@ private fun ServerCard(
                             modifier = Modifier.appPopupBorder(),
                             containerColor = appPopupContainerColor(),
                         ) {
+                            if (isConnected) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.server_mgmt_title)) },
+                                    onClick = {
+                                        showMenu = false
+                                        onManageServer()
+                                    },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.Settings, contentDescription = null)
+                                    }
+                                )
+                            }
                             DropdownMenuItem(
                                 text = { Text(stringResource(R.string.home_edit)) },
                                 onClick = {

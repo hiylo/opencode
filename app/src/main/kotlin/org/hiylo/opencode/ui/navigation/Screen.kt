@@ -125,6 +125,26 @@ sealed class Screen(val route: String) {
         }
     }
 
+    data object ServerManagement : Screen("server_management") {
+        fun createRoute(
+            serverUrl: String,
+            username: String,
+            password: String,
+            serverName: String,
+            serverId: String,
+            directory: String = "",
+        ): String {
+            val encodedUrl = encodeNavigationArgument(serverUrl)
+            val encodedUsername = encodeNavigationArgument(username)
+            val encodedPassword = encodeNavigationArgument(password)
+            val encodedName = encodeNavigationArgument(serverName)
+            val encodedServerId = encodeNavigationArgument(serverId)
+            val encodedDirectory = encodeNavigationArgument(directory)
+            return "server_management?serverUrl=$encodedUrl&username=$encodedUsername&password=$encodedPassword" +
+                "&serverName=$encodedName&serverId=$encodedServerId&directory=$encodedDirectory"
+        }
+    }
+
     data object ServerProviders : Screen("server_providers") {
         fun createRoute(
             serverUrl: String,

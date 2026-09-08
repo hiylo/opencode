@@ -69,6 +69,7 @@ import org.hiylo.opencode.ui.screens.server.ServerModelFilterScreen
 import org.hiylo.opencode.ui.screens.server.ServerMcpScreen
 import org.hiylo.opencode.ui.screens.server.ServerProvidersScreen
 import org.hiylo.opencode.ui.screens.server.ServerSettingsScreen
+import org.hiylo.opencode.ui.screens.server.ServerManagementScreen
 import org.hiylo.opencode.ui.screens.webview.WebViewScreen
 import org.hiylo.opencode.service.OpenCodeConnectionService
 import androidx.core.content.ContextCompat
@@ -417,6 +418,11 @@ fun NavGraph(
                         Screen.ServerSettings.createRoute(serverUrl, username, password, serverName, serverId)
                     )
                 },
+                onNavigateToServerManagement = { serverUrl, username, password, serverName, serverId ->
+                    navController.navigate(
+                        Screen.ServerManagement.createRoute(serverUrl, username, password, serverName, serverId)
+                    )
+                },
                 onNavigateToSettings = {
                     navController.navigate(Screen.Settings.route)
                 },
@@ -576,6 +582,20 @@ fun NavGraph(
             )
         ) {
             ServerMcpScreen(onNavigateBack = { navController.popBackStack() })
+        }
+
+        composable(
+            route = "server_management?serverUrl={serverUrl}&username={username}&password={password}&serverName={serverName}&serverId={serverId}&directory={directory}",
+            arguments = listOf(
+                navArgument("serverUrl") { type = NavType.StringType },
+                navArgument("username") { type = NavType.StringType },
+                navArgument("password") { type = NavType.StringType },
+                navArgument("serverName") { type = NavType.StringType },
+                navArgument("serverId") { type = NavType.StringType },
+                navArgument("directory") { type = NavType.StringType; defaultValue = "" },
+            )
+        ) {
+            ServerManagementScreen(onNavigateBack = { navController.popBackStack() })
         }
 
         // ============ About Screen ============

@@ -1123,6 +1123,21 @@ class OpenCodeApi @Inject constructor(
     }
 
     /**
+     * Patch custom provider configuration.
+     * PATCH /config with only the provider map in the body.
+     */
+    suspend fun updateProviderConfig(
+        conn: ServerConnection,
+        provider: Map<String, ProviderConfigDefinition>,
+    ): ServerConfigResponse {
+        return httpClient.patch("${conn.baseUrl}/config") {
+            conn.authHeader?.let { header("Authorization", it) }
+            contentType(ContentType.Application.Json)
+            setBody(ServerConfigPatch(provider = provider))
+        }.body()
+    }
+
+    /**
      * Dispose global instances and force provider/auth state refresh.
      * POST /global/dispose
      */
@@ -1522,7 +1537,8 @@ data class ServerConfigResponse(
     @SerialName("enabled_providers") val enabledProviders: List<String>? = null,
     val model: String? = null,
     @SerialName("small_model") val smallModel: String? = null,
-    @SerialName("default_agent") val defaultAgent: String? = null
+    @SerialName("default_agent") val defaultAgent: String? = null,
+    @SerialName("provider") val provider: Map<String, ProviderConfigDefinition>? = null
 )
 
 @Serializable
@@ -1530,7 +1546,34 @@ data class ServerConfigPatch(
     @SerialName("disabled_providers") val disabledProviders: List<String>? = null,
     val model: String? = null,
     @SerialName("small_model") val smallModel: String? = null,
-    @SerialName("default_agent") val defaultAgent: String? = null
+    @SerialName("default_agent") val defaultAgent: String? = null,
+    @SerialName("provider") val provider: Map<String, ProviderConfigDefinition>? = null
+)
+
+/**
+ * 单个自定义服务商的配置定义（来自 /config 顶层 provider 映射）。
+ *
+ * @author Hsi Chu
+ * @since 1.0
+ */
+@Serializable
+data class ProviderConfigDefinition(
+    val name: String? = null,
+    val npm: String? = null,
+    val options: Map<String, JsonElement> = emptyMap(),
+    val models: Map<String, ProviderModelDefinition> = emptyMap()
+)
+
+/**
+ * 自定义服务商下的单个模型定义。
+ *
+ * @author Hsi Chu
+ * @since 1.0
+ */
+@Serializable
+data class ProviderModelDefinition(
+    val name: String? = null,
+    val limit: ModelLimit? = null
 )
 
 @Serializable

@@ -11,10 +11,13 @@ package org.hiylo.opencode.ui.screens.server
 
 import org.hiylo.opencode.logging.AppLogger as Log
 import org.hiylo.opencode.BuildConfig
+import android.content.Context
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import org.hiylo.opencode.R
 import org.hiylo.opencode.data.api.AgentInfo
 import org.hiylo.opencode.data.api.OpenCodeApi
 import org.hiylo.opencode.data.api.ProviderAuthMethod
@@ -22,6 +25,8 @@ import org.hiylo.opencode.data.api.ProviderInfo
 import org.hiylo.opencode.data.api.ProviderModel
 import org.hiylo.opencode.data.api.ProviderOauthAuthorization
 import org.hiylo.opencode.data.api.ProviderAuthException
+import org.hiylo.opencode.data.api.ProviderConfigDefinition
+import org.hiylo.opencode.data.api.ProviderModelDefinition
 import org.hiylo.opencode.data.api.ServerConfigPatch
 import org.hiylo.opencode.data.api.ServerConfigResponse
 import org.hiylo.opencode.data.api.ServerConnection
@@ -32,6 +37,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import javax.inject.Inject
 
 private const val TAG = "ServerSettingsViewModel"
@@ -50,7 +57,9 @@ data class ServerSettingsUiState(
     val isSaving: Boolean = false,
     val isLoading: Boolean = true,
     val error: String? = null,
+    val message: String? = null,
     val oauthProxyHint: Boolean = false,
+    val customProviders: List<ProviderConfigEntry> = emptyList(),
 )
 
 data class PendingOauth(
@@ -87,12 +96,27 @@ data class ModelToggle(
     val visible: Boolean
 )
 
+/**
+ * 自定义服务商在界面上的展示条目（由 /config 的 provider 映射派生）。
+ *
+ * @author Hsi Chu
+ * @since 1.0
+ */
+data class ProviderConfigEntry(
+    val providerId: String,
+    val name: String,
+    val npm: String? = null,
+    val baseUrl: String = "",
+    val models: Map<String, String> = emptyMap(),
+)
+
 @HiltViewModel
 class ServerSettingsViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val api: OpenCodeApi,
     private val settingsRepository: SettingsRepository,
     private val diagnosticLogRepository: DiagnosticLogRepository,
+    @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
     private val serverUrl: String = savedStateHandle.get<String>("serverUrl").orEmpty()
@@ -108,6 +132,7 @@ class ServerSettingsViewModel @Inject constructor(
     private val _providerConnected = MutableStateFlow<Set<String>>(emptySet())
     private val _agents = MutableStateFlow<List<AgentInfo>>(emptyList())
     private val _config = MutableStateFlow(ServerConfigResponse())
+    private val _providerConfig = MutableStateFlow<Map<String, ProviderConfigDefinition>>(emptyMap())
     private val _authMethods = MutableStateFlow<Map<String, List<ProviderAuthMethod>>>(emptyMap())
     private val _hiddenModels = MutableStateFlow<Set<String>>(emptySet())
     private val _uiState = MutableStateFlow(ServerSettingsUiState(serverName = serverName, isLoading = true))
@@ -122,6 +147,7 @@ class ServerSettingsViewModel @Inject constructor(
         }
         loadProviders()
         loadConfig()
+        loadProviderConfig()
         loadAgents()
         loadAuthMethods()
     }
@@ -168,6 +194,17 @@ class ServerSettingsViewModel @Inject constructor(
                 rebuildUi()
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to load config", e)
+            }
+        }
+    }
+
+    private fun loadProviderConfig() {
+        viewModelScope.launch {
+            try {
+                _providerConfig.value = api.getConfig(conn).provider.orEmpty()
+                rebuildUi()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to load provider config", e)
             }
         }
     }
@@ -315,6 +352,62 @@ class ServerSettingsViewModel @Inject constructor(
         _uiState.update { it.copy(error = null, oauthProxyHint = false) }
     }
 
+    fun clearMessage() {
+        _uiState.update { it.copy(message = null) }
+    }
+
+    fun saveProvider(providerId: String, name: String, baseUrl: String, models: Map<String, String>) {
+        if (providerId.isBlank()) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isSaving = true, error = null) }
+            try {
+                val existing = _providerConfig.value[providerId]
+                val options = (existing?.options ?: emptyMap()).toMutableMap().apply {
+                    put("baseURL", JsonPrimitive(baseUrl.trim()))
+                }
+                val modelDefs = models.mapValues { (_, modelName) ->
+                    ProviderModelDefinition(name = modelName.trim().ifBlank { null })
+                }
+                val definition = ProviderConfigDefinition(
+                    name = name.trim().ifBlank { null },
+                    npm = existing?.npm ?: "@ai-sdk/openai-compatible",
+                    options = options,
+                    models = modelDefs,
+                )
+                val updated = _providerConfig.value + (providerId to definition)
+                api.updateProviderConfig(conn, updated)
+                // 乐观更新：直接使用刚提交的 map，避免立即 GET 回读到服务器尚未生效的旧配置。
+                _providerConfig.value = updated
+                loadProviders()
+                _uiState.update { it.copy(message = context.getString(R.string.server_settings_provider_saved)) }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to save provider", e)
+                _uiState.update { it.copy(error = e.message ?: context.getString(R.string.server_settings_provider_save_failed)) }
+            } finally {
+                _uiState.update { it.copy(isSaving = false) }
+            }
+        }
+    }
+
+    fun deleteProvider(providerId: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isSaving = true, error = null) }
+            try {
+                val updated = _providerConfig.value - providerId
+                api.updateProviderConfig(conn, updated)
+                // 乐观更新：避免立即 GET 回读旧配置。
+                _providerConfig.value = updated
+                loadProviders()
+                _uiState.update { it.copy(message = context.getString(R.string.server_settings_provider_removed)) }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to delete provider", e)
+                _uiState.update { it.copy(error = e.message ?: context.getString(R.string.server_settings_provider_remove_failed)) }
+            } finally {
+                _uiState.update { it.copy(isSaving = false) }
+            }
+        }
+    }
+
     private suspend fun recordOauthFailure(
         stage: String,
         providerId: String,
@@ -411,6 +504,18 @@ class ServerSettingsViewModel @Inject constructor(
         val hidden = _hiddenModels.value
         val disabled = _config.value.disabledProviders.toSet()
 
+        val customProviders = _providerConfig.value.entries
+            .map { (id, def) ->
+                ProviderConfigEntry(
+                    providerId = id,
+                    name = def.name ?: id,
+                    npm = def.npm,
+                    baseUrl = (def.options["baseURL"] as? JsonPrimitive)?.contentOrNull.orEmpty(),
+                    models = def.models.mapValues { (_, m) -> m.name ?: "" },
+                )
+            }
+            .sortedBy { it.name.lowercase() }
+
         val providerSource = if (_providerCatalog.value.isNotEmpty()) _providerCatalog.value else _allProviders.value
         val providerToggles = providerSource
             .map {
@@ -482,7 +587,8 @@ class ServerSettingsViewModel @Inject constructor(
                 pendingOauth = it.pendingOauth,
                 isSaving = it.isSaving,
                 isLoading = false,
-                error = it.error
+                error = it.error,
+                customProviders = customProviders
             )
         }
     }
