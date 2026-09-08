@@ -47,6 +47,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -1083,6 +1084,10 @@ fun ChatScreen(
     val uiState by viewModel.uiState.collectAsState()
     val draftText by viewModel.draftText.collectAsState()
     val draftAttachmentUris by viewModel.draftAttachmentUris.collectAsState()
+    val isSummarizing by viewModel.isSummarizing.collectAsState()
+    val summaryText by viewModel.summaryText.collectAsState()
+    val summaryError by viewModel.summaryError.collectAsState()
+    val summaryVisible by viewModel.summaryVisible.collectAsState()
     var inputText by remember { mutableStateOf(TextFieldValue("")) }
     // Sync inputText once from draft on first composition
     var draftTextInitialized by remember { mutableStateOf(false) }
@@ -1936,6 +1941,16 @@ fun ChatScreen(
                                 },
                                 leadingIcon = {
                                     Icon(Icons.Default.RateReview, contentDescription = null)
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.chat_summarize_session)) },
+                                onClick = {
+                                    showMenu = false
+                                    viewModel.summarizeSession()
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.AutoAwesome, contentDescription = null)
                                 },
                             )
                             // Show Share or Unshare depending on current share status
@@ -2923,7 +2938,24 @@ fun ChatScreen(
                                             snackbarHostState.showSnackbar(context.getString(R.string.chat_copied_clipboard))
                                         }
                                     }
-                                }
+                                },
+                                onRegenerate = if (chatMessage.isAssistant) {
+                                    {
+                                        viewModel.regenerateMessage(chatMessage.message.id) { ok ->
+                                            coroutineScope.launch {
+                                                snackbarHostState.showSnackbar(
+                                                    if (ok) context.getString(R.string.chat_message_regenerated) else context.getString(R.string.chat_message_regenerate_failed)
+                                                )
+                                            }
+                                        }
+                                    }
+                                } else null,
+                                onEdit = if (chatMessage.isUser) {
+                                    { viewModel.editUserMessage(chatMessage.message.id) }
+                                } else null,
+                                onSummarize = if (chatMessage.isAssistant) {
+                                    { viewModel.summarizeMessage(chatMessage.message.id) }
+                                } else null,
                             )
                             }
                         }
@@ -3047,6 +3079,16 @@ fun ChatScreen(
                 onManageModels()
             },
             onDismiss = { showModelPicker = false }
+        )
+    }
+
+    // Summary dialog
+    if (summaryVisible) {
+        SummaryDialog(
+            isGenerating = isSummarizing,
+            summary = summaryText,
+            error = summaryError,
+            onDismiss = { viewModel.dismissSummary() },
         )
     }
 
@@ -3370,6 +3412,61 @@ private fun RevertConfirmationDialog(
             }
             AppSecondaryButton(onClick = onConfirm, destructive = true) {
                 Text(stringResource(R.string.chat_revert))
+            }
+        }
+    }
+}
+
+@Composable
+private fun SummaryDialog(
+    isGenerating: Boolean,
+    summary: String?,
+    error: String?,
+    onDismiss: () -> Unit,
+) {
+    ChatDialog(onDismiss = onDismiss) {
+        Text(
+            stringResource(R.string.chat_summary_title),
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+        )
+        Spacer(Modifier.height(12.dp))
+        when {
+            error != null -> {
+                Text(error, color = MaterialTheme.colorScheme.error)
+            }
+            summary != null -> {
+                Column {
+                    Text(
+                        summary,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier
+                            .heightIn(max = 380.dp)
+                            .verticalScroll(rememberScrollState()),
+                    )
+                    if (isGenerating) {
+                        Spacer(Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                            Text(
+                                stringResource(R.string.chat_summary_generating),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+            isGenerating -> {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Text(stringResource(R.string.chat_summary_generating))
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            AppSecondaryButton(onClick = onDismiss) {
+                Text(stringResource(R.string.chat_dismiss))
             }
         }
     }
@@ -4680,6 +4777,9 @@ private fun ChatMessageBubble(
     chatMessages: List<ChatMessage>,
     onRevert: (() -> Unit)? = null,
     onCopyText: (() -> Unit)? = null,
+    onRegenerate: (() -> Unit)? = null,
+    onEdit: (() -> Unit)? = null,
+    onSummarize: (() -> Unit)? = null,
     onNavigateToChildSession: (String) -> Unit = {},
 ) {
     val chatMessage = chatMessages.last()
@@ -4956,6 +5056,9 @@ private fun ChatMessageBubble(
                             { showRevertConfirmation = true }
                         } else null,
                         onCopyText = onCopyText,
+                        onRegenerate = onRegenerate,
+                        onEdit = onEdit,
+                        onSummarize = onSummarize,
                     )
                 }
             }
@@ -4977,6 +5080,9 @@ private fun MessageMetadataRow(
     delivery: MessageDelivery?,
     onRevert: (() -> Unit)?,
     onCopyText: (() -> Unit)?,
+    onRegenerate: (() -> Unit)?,
+    onEdit: (() -> Unit)?,
+    onSummarize: (() -> Unit)?,
 ) {
     val hapticView = LocalView.current
     val hapticOn = LocalHapticFeedbackEnabled.current
@@ -5048,40 +5154,74 @@ private fun MessageMetadataRow(
         if (tokenSummary != null) {
             Text(tokenSummary, style = MaterialTheme.typography.labelSmall, color = textColor.copy(alpha = 0.42f))
         }
-        if (onRevert != null) {
+        var menuExpanded by remember { mutableStateOf(false) }
+        Box {
             Box(
                 modifier = Modifier
                     .size(20.dp)
                     .semantics { role = Role.Button }
                     .clickable {
                         performHaptic(hapticView, hapticOn)
-                        onRevert()
+                        menuExpanded = true
                     },
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    Icons.AutoMirrored.Filled.Undo,
-                    contentDescription = stringResource(R.string.chat_revert),
-                    modifier = Modifier.size(13.dp),
-                    tint = textColor.copy(alpha = 0.58f),
+                    Icons.Default.MoreVert,
+                    contentDescription = stringResource(R.string.more_options),
+                    modifier = Modifier.size(18.dp),
+                    tint = textColor.copy(alpha = 0.7f),
                 )
             }
-        }
-        if (onCopyText != null) {
-            Spacer(Modifier.width(3.dp))
-            Box(
-                modifier = Modifier
-                    .size(20.dp)
-                    .semantics { role = Role.Button }
-                    .clickable { performHaptic(hapticView, hapticOn); onCopyText() },
-                contentAlignment = Alignment.Center,
+            DropdownMenu(
+                expanded = menuExpanded,
+                onDismissRequest = { menuExpanded = false },
             ) {
-                Icon(
-                    Icons.Default.ContentCopy,
-                    contentDescription = stringResource(R.string.chat_copy),
-                    modifier = Modifier.size(13.dp),
-                    tint = textColor.copy(alpha = 0.42f),
-                )
+                if (onCopyText != null) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.chat_copy)) },
+                        onClick = {
+                            menuExpanded = false
+                            onCopyText()
+                        },
+                    )
+                }
+                if (onRegenerate != null) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.chat_regenerate)) },
+                        onClick = {
+                            menuExpanded = false
+                            onRegenerate()
+                        },
+                    )
+                }
+                if (onEdit != null) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.chat_edit_message)) },
+                        onClick = {
+                            menuExpanded = false
+                            onEdit()
+                        },
+                    )
+                }
+                if (onSummarize != null) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.chat_summarize)) },
+                        onClick = {
+                            menuExpanded = false
+                            onSummarize()
+                        },
+                    )
+                }
+                if (onRevert != null) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.chat_revert)) },
+                        onClick = {
+                            menuExpanded = false
+                            onRevert()
+                        },
+                    )
+                }
             }
         }
     }

@@ -293,6 +293,19 @@ class ChatViewModel @Inject constructor(
     /** Whether the current project is a Git repository (Project.vcs == "git"). */
     private val _isGitRepository = MutableStateFlow(false)
     val isGitRepository: StateFlow<Boolean> = _isGitRepository
+    // ============ Conversation summary ============
+    /** True while a message/conversation summary is being generated. */
+    private val _isSummarizing = MutableStateFlow(false)
+    val isSummarizing: StateFlow<Boolean> = _isSummarizing
+    /** The latest generated summary text, or null when no summary is shown. */
+    private val _summaryText = MutableStateFlow<String?>(null)
+    val summaryText: StateFlow<String?> = _summaryText
+    /** Non-null when the last summary generation failed. */
+    private val _summaryError = MutableStateFlow<String?>(null)
+    val summaryError: StateFlow<String?> = _summaryError
+
+    private val _summaryVisible = MutableStateFlow(false)
+    val summaryVisible: StateFlow<Boolean> = _summaryVisible
     /** Monotonic token invalidating in-flight suggestion generations when the conversation changes. */
     private var suggestionsGeneration = 0L
     private val _allProviders = MutableStateFlow<List<ProviderInfo>>(emptyList())
@@ -2056,6 +2069,196 @@ class ChatViewModel @Inject constructor(
         _suggestions.value = emptyList()
         _suggestionsError.value = null
     }
+
+    // ============ Message actions ============
+
+    /**
+     * 重新生成：回退到该 assistant 消息之前最近的一条用户消息，再自动重发其文本与附件。
+     * 复用 [OpenCodeApi.revertSession] 与 [sendParts]，与 /undo 后再发送等价。
+     *
+     * @param assistantMessageId 要重新生成的 assistant 消息 ID
+     * @param onResult 完成回调，true 表示已触发重发
+     */
+    fun regenerateMessage(assistantMessageId: String, onResult: (Boolean) -> Unit = {}) {
+        if (_isSending.value) {
+            onResult(false)
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val messages = uiState.value.messages
+                val assistantIdx = messages.indexOfFirst { it.message.id == assistantMessageId && it.isAssistant }
+                if (assistantIdx < 0) {
+                    onResult(false)
+                    return@launch
+                }
+                val precedingUser = messages.subList(0, assistantIdx).lastOrNull { it.isUser }
+                if (precedingUser == null) {
+                    onResult(false)
+                    return@launch
+                }
+                val parts = promptPartsFromMessage(precedingUser)
+                if (parts.isEmpty()) {
+                    onResult(false)
+                    return@launch
+                }
+                // 回退到该用户消息，丢弃其后的 assistant 回复与后续消息。
+                val reverted = api.revertSession(conn, sessionId, precedingUser.message.id)
+                eventReducer.upsertSession(serverId, reverted)
+                pendingPromptRepository.remove(precedingUser.message.id)
+                _pendingPrompts.value = _pendingPrompts.value.filterNot { it.messageId == precedingUser.message.id }
+                val sent = sendParts(parts)
+                onResult(sent)
+            } catch (e: Exception) {
+                e.rethrowCancellation()
+                Log.e(TAG, "Failed to regenerate message", e)
+                onResult(false)
+            }
+        }
+    }
+
+    /**
+     * 编辑重发：把该用户消息的原文与图片回填到输入框，供用户修改后重发。
+     * 不回退会话，只回填输入框（复用 [restoreRevertedDraft] 的事件机制）。
+     *
+     * @param messageId 目标用户消息 ID
+     */
+    fun editUserMessage(messageId: String) {
+        val message = uiState.value.messages.lastOrNull { it.message.id == messageId && it.isUser } ?: return
+        restoreRevertedDraft(extractRevertedDraft(message))
+    }
+
+    /**
+     * 总结一条消息：优先调用云端 LLM，失败或未配置时回退端侧 MNN 模型。
+     *
+     * @param messageId 要总结的消息 ID
+     */
+    fun summarizeMessage(messageId: String) {
+        if (_isSummarizing.value) return
+        val message = uiState.value.messages.lastOrNull { it.message.id == messageId } ?: return
+        val text = message.parts
+            .filterIsInstance<Part.Text>()
+            .filterNot { it.ignored == true }
+            .joinToString("\n") { it.text }
+            .trim()
+        if (text.isBlank()) return
+        runSummary(text)
+    }
+
+    /**
+     * 总结整个会话：优先调用云端 LLM，失败或未配置时回退端侧 MNN 模型。
+     */
+    fun summarizeSession() {
+        if (_isSummarizing.value) return
+        val text = buildRecentConversationText(maxTurns = uiState.value.messages.size)
+        if (text.isBlank()) return
+        runSummary(text)
+    }
+
+    /** 关闭总结弹窗；若生成仍在进行，生成会在后台继续但弹窗不再显示。 */
+    fun dismissSummary() {
+        _summaryVisible.value = false
+        _summaryText.value = null
+        _summaryError.value = null
+    }
+
+    /** 由一条用户消息构造可重发的 [PromptPart] 列表（文本 + 文件附件）。 */
+    private fun promptPartsFromMessage(message: ChatMessage): List<PromptPart> {
+        val parts = mutableListOf<PromptPart>()
+        message.parts
+            .filterIsInstance<Part.Text>()
+            .filter { it.text.isNotBlank() }
+            .joinToString("\n") { it.text }
+            .takeIf { it.isNotBlank() }
+            ?.let { parts.add(PromptPart(type = "text", text = it)) }
+        message.parts.filterIsInstance<Part.File>().forEach { file ->
+            parts.add(
+                PromptPart(
+                    type = "file",
+                    mime = file.mime,
+                    url = file.url,
+                    filename = file.filename,
+                )
+            )
+        }
+        return parts
+    }
+
+    /** 双链路执行总结：云端优先、端侧回退，参考 GitViewModel.generateCommitMessage 的写法。 */
+    private fun runSummary(text: String) {
+        viewModelScope.launch {
+            _isSummarizing.value = true
+            _summaryText.value = null
+            _summaryError.value = null
+            _summaryVisible.value = true
+            try {
+                val prompt = buildSummaryPrompt(text)
+                var summary: String? = null
+                var onDeviceAvailable = false
+                val baseUrl = settingsRepository.llmProviderBaseUrl.first()
+                val model = settingsRepository.llmProviderModel.first()
+                if (baseUrl.isNotBlank() && model.isNotBlank()) {
+                    val apiKey = secretStore.get(LocalSyncSecretStore.SecretKey.LLM_PROVIDER_API_KEY).orEmpty()
+                    summary = runCatching {
+                        suggestionProvider.chat(
+                            SuggestionProvider.Config(baseUrl = baseUrl, apiKey = apiKey, model = model),
+                            prompt,
+                        ).trim().takeIf { it.isNotBlank() }
+                    }.getOrNull()
+                }
+                if (summary == null) {
+                    onDeviceAvailable = MnnLlm.ensureLoaded(context)
+                    if (onDeviceAvailable) {
+                        MnnLlm.reset()
+                        // 流式生成：边生成边把部分内容推给 UI，避免只有转圈无反馈。
+                        var lastFlush = 0L
+                        val pending = StringBuilder()
+                        fun flush() {
+                            if (pending.isEmpty()) return
+                            _summaryText.value = (_summaryText.value ?: "") + pending.toString()
+                            pending.clear()
+                        }
+                        val full = MnnLlm.generateStreaming(prompt, maxTokens = SUMMARY_MAX_TOKENS) { delta ->
+                            pending.append(delta)
+                            val now = System.currentTimeMillis()
+                            if (now - lastFlush >= 50L) {
+                                lastFlush = now
+                                flush()
+                            }
+                        }
+                        flush()
+                        summary = full.trim().takeIf { it.isNotBlank() }
+                    }
+                }
+                if (summary != null) _summaryText.value = summary
+                _summaryError.value = when {
+                    summary != null -> null
+                    !onDeviceAvailable && (baseUrl.isBlank() || model.isBlank()) ->
+                        context.getString(R.string.chat_summary_no_model)
+                    else -> context.getString(R.string.chat_summary_failed)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Summary generation failed", e)
+                _summaryError.value = context.getString(R.string.chat_summary_failed)
+            } finally {
+                _isSummarizing.value = false
+            }
+        }
+    }
+
+    /** 构造总结提示词，要求只输出简洁摘要（中/英按当前语言）。 */
+    private fun buildSummaryPrompt(text: String): String {
+        val isZh = context.resources.configuration.locales[0].language == "zh"
+        return if (isZh) {
+            "请用简洁的中文总结下面这段对话内容，突出关键结论、决定与待办事项。\n" +
+                "只输出总结本身，不要解释、不要 markdown。\n\n内容：\n$text"
+        } else {
+            "Summarize the following conversation content concisely, highlighting key conclusions, " +
+                "decisions, and open items.\nOutput ONLY the summary — no explanation, no markdown.\n\nContent:\n$text"
+        }
+    }
 }
 
 /** Prompt asking the model to produce exactly three next-step suggestions as a JSON array. */
@@ -2072,6 +2275,9 @@ internal const val SUGGESTION_CONTEXT_MAX_ROUNDS = 4
 
 /** Maximum output tokens for on-device suggestion generation. */
 internal const val SUGGESTION_MAX_TOKENS = 100
+
+/** Maximum output tokens for on-device summary generation. */
+internal const val SUMMARY_MAX_TOKENS = 256
 
 /**
  * Extracts up to 3 suggestion strings from an assistant reply.
