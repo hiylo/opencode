@@ -1,8 +1,8 @@
 {
-  "versionName": "1.0.1",
-  "versionCode": 2,
-  "releaseUrl": "https://github.com/hiylo/opencode/releases/tag/v1.0.1",
+  "versionName": "1.1.0",
+  "versionCode": 3,
+  "releaseUrl": "https://github.com/hiylo/opencode/releases/tag/v1.1.0",
   "packageName": "org.hiylo.opencode",
-  "apkUrl": "https://github.com/hiylo/opencode/releases/download/v1.0.1/opencode-1.0.1.apk",
-  "sha256": "ad86d539c2836eeaab758f7928a52d4e654d0b3173c39b356a630dea30b6ed7a"
+  "apkUrl": "https://github.com/hiylo/opencode/releases/download/v1.1.0/opencode-1.1.0.apk",
+  "sha256": "98eebdc066ba2cffee2223f4bc7440a628d545b69590c8587933f2e6acf342da"
 }

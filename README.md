@@ -39,6 +39,9 @@ manage sessions — all from a mobile-first UI.
 - **Conversation links** — links pointing to the connected server open inside an in-app WebView
   (with Basic Auth); all other links keep the system browser, so credentials never leak
 - **Git** — a built-in Git page (from the chat ⋮ menu when the project is a repository) with branch/status, change list and diffs, commit history, and commit/push/pull/checkout/branch operations — plus AI-generated commit messages (cloud LLM with on-device fallback)
+- **Server & provider management** — server info (version/active sessions), CPU/memory/disk, config view/edit, restart, and custom provider management (add/edit/remove providers and models)
+- **File editing** — edit and save workspace files in-app
+- **Conversation summaries** — per-message or whole-session summaries via the cloud LLM (with on-device fallback), streamed live
 - **Accent color** — six brand accent palettes, applied app-wide (light/dark/AMOLED) and synced
 - **Workspace files** — browse project folders, preview highlighted text, Markdown and images, and
   download files
