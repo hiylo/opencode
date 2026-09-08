@@ -77,9 +77,9 @@ class SuggestionProvider @Inject constructor(
      * validates that the endpoint accepts and answers messages end-to-end.
      * @throws Exception when the request fails or the response is unusable.
      */
-    suspend fun chat(config: Config, userMessage: String): String {
+    suspend fun chat(config: Config, userMessage: String, maxTokens: Int = CHAT_TEST_MAX_TOKENS): String {
         val messages = listOf(ChatMessage(role = "user", content = userMessage))
-        return postCompletion(config, messages, maxTokens = CHAT_TEST_MAX_TOKENS)
+        return postCompletion(config, messages, maxTokens = maxTokens)
     }
 
     /** Posts a chat completion and returns the raw reply content. */

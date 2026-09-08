@@ -2203,6 +2203,7 @@ class ChatViewModel @Inject constructor(
                         suggestionProvider.chat(
                             SuggestionProvider.Config(baseUrl = baseUrl, apiKey = apiKey, model = model),
                             prompt,
+                            maxTokens = SUMMARY_MAX_TOKENS,
                         ).trim().takeIf { it.isNotBlank() }
                     }.getOrNull()
                 }

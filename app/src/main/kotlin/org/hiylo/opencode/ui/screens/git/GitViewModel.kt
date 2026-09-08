@@ -40,6 +40,7 @@ private const val TAG = "GitViewModel"
 
 /** 提交历史每次加载/追加的条数。 */
 private const val COMMIT_PAGE_SIZE = 20
+private const val COMMIT_MSG_MAX_TOKENS = 128
 
 /** Git 仓库在仓库选择器中的种类。 */
 enum class GitRepoKind { ROOT, SUBMODULE, NESTED }
@@ -609,6 +610,7 @@ class GitViewModel @Inject constructor(
                         suggestionProvider.chat(
                             SuggestionProvider.Config(baseUrl = baseUrl, apiKey = apiKey, model = model),
                             prompt,
+                            maxTokens = COMMIT_MSG_MAX_TOKENS,
                         ).trim().takeIf { it.isNotBlank() }
                     }.getOrNull()
                 }

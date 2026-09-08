@@ -361,7 +361,10 @@ class ServerSettingsViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isSaving = true, error = null) }
             try {
-                val existing = _providerConfig.value[providerId]
+                // 保存前重新拉取最新配置作为合并基底，缩小并发写覆盖的窗口。
+                val fresh = api.getConfig(conn).provider.orEmpty()
+                _providerConfig.value = fresh
+                val existing = fresh[providerId]
                 val options = (existing?.options ?: emptyMap()).toMutableMap().apply {
                     put("baseURL", JsonPrimitive(baseUrl.trim()))
                 }
@@ -374,7 +377,7 @@ class ServerSettingsViewModel @Inject constructor(
                     options = options,
                     models = modelDefs,
                 )
-                val updated = _providerConfig.value + (providerId to definition)
+                val updated = fresh + (providerId to definition)
                 api.updateProviderConfig(conn, updated)
                 // 乐观更新：直接使用刚提交的 map，避免立即 GET 回读到服务器尚未生效的旧配置。
                 _providerConfig.value = updated

@@ -22,6 +22,7 @@ import org.hiylo.opencode.data.api.OpenCodeApi
 import org.hiylo.opencode.data.api.ServerConnection
 import org.hiylo.opencode.data.repository.SettingsRepository
 import org.hiylo.opencode.data.shell.ServerShellRegistry
+import org.hiylo.opencode.data.shell.ShellCommandResult
 import org.hiylo.opencode.logging.AppLogger as Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -302,8 +303,22 @@ class WorkspaceFilesViewModel @Inject constructor(
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     val encoded = Base64.getEncoder().encodeToString(content.toByteArray(Charsets.UTF_8))
-                    val command = "printf '%s' '$encoded' | base64 -d > ${shellQuote(preview.node.path)}"
-                    ptySession.runCommandResult(command)
+                    val path = shellQuote(preview.node.path)
+                    // 分块写入：每条命令的 base64 片段控制在 3000 字符内（4 的倍数，可独立解码），
+                    // 避免超大文件单条命令超出 PTY 行缓冲上限。
+                    var first = true
+                    var offset = 0
+                    var last = ShellCommandResult(0, "")
+                    while (offset < encoded.length) {
+                        val end = minOf(offset + 3000, encoded.length)
+                        val chunk = encoded.substring(offset, end)
+                        val redirect = if (first) ">" else ">>"
+                        last = ptySession.runCommandResult("printf '%s' '$chunk' | base64 -d $redirect $path")
+                        if (last.exitCode != 0) break
+                        first = false
+                        offset = end
+                    }
+                    last
                 }
             }
             result.onSuccess { r ->
