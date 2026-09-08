@@ -18,16 +18,13 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import org.hiylo.opencode.R
 import org.hiylo.opencode.data.api.OpenCodeApi
-import org.hiylo.opencode.data.api.PtySocket
 import org.hiylo.opencode.data.api.ServerConnection
 import org.hiylo.opencode.data.api.SuggestionProvider
 import org.hiylo.opencode.data.repository.SettingsRepository
+import org.hiylo.opencode.data.shell.ServerShellRegistry
 import org.hiylo.opencode.data.sync.LocalSyncSecretStore
 import org.hiylo.opencode.ml.MnnLlm
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -35,14 +32,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 import javax.inject.Inject
 
 private const val TAG = "GitViewModel"
+
+/** 提交历史每次加载/追加的条数。 */
+private const val COMMIT_PAGE_SIZE = 20
 
 /** Git 仓库在仓库选择器中的种类。 */
 enum class GitRepoKind { ROOT, SUBMODULE, NESTED }
@@ -101,6 +98,11 @@ data class GitUiState(
     val isLoadingCommit: Boolean = false,
     val commitFileDiff: GitFileDiff? = null,
     val remotes: List<String> = emptyList(),
+    val tags: List<String> = emptyList(),
+    val hasStash: Boolean = false,
+    val aheadCount: Int = 0,
+    val hasMoreCommits: Boolean = false,
+    val isLoadingMoreCommits: Boolean = false,
     val notRepository: Boolean = false,
     val isLoading: Boolean = true,
     val error: String? = null,
@@ -124,6 +126,7 @@ class GitViewModel @Inject constructor(
     private val suggestionProvider: SuggestionProvider,
     private val settingsRepository: SettingsRepository,
     private val secretStore: LocalSyncSecretStore,
+    private val shellRegistry: ServerShellRegistry,
 ) : ViewModel() {
 
     private val conn = ServerConnection.from(
@@ -131,6 +134,7 @@ class GitViewModel @Inject constructor(
         username = savedStateHandle.get<String>("username").orEmpty().ifBlank { "opencode" },
         password = savedStateHandle.get<String>("password").orEmpty().ifEmpty { null },
     )
+    private val serverId = savedStateHandle.get<String>("serverId").orEmpty()
     private val directory = savedStateHandle.get<String>("directory").orEmpty()
 
     private val _uiState = MutableStateFlow(GitUiState(directory = directory))
@@ -145,11 +149,20 @@ class GitViewModel @Inject constructor(
     private val _generateError = MutableStateFlow<String?>(null)
     val generateError: StateFlow<String?> = _generateError.asStateFlow()
 
-    /** 常驻 PTY 会话：复用单一终端连接执行所有 git 命令，避免每次新建 PTY 的 shell 启动开销。 */
-    private val ptySession by lazy { GitPtySession(api, conn, directory, viewModelScope) }
+    /** 连接级共享 PTY 会话：按 server 复用，与服务器管理页共用同一条 PTY。 */
+    private var ptySessionAcquired = false
+    private val ptySession by lazy {
+        ptySessionAcquired = true
+        shellRegistry.acquire(serverId.ifBlank { conn.baseUrl }, api, conn, directory)
+    }
+
+    /** 已加载的提交数量，用于「加载更多」时计算 `--skip`。 */
+    private var loadedCommitCount = 0
 
     override fun onCleared() {
-        ptySession.close()
+        if (ptySessionAcquired) {
+            shellRegistry.release(serverId.ifBlank { conn.baseUrl })
+        }
         super.onCleared()
     }
 
@@ -167,74 +180,10 @@ class GitViewModel @Inject constructor(
     private suspend fun refreshInternal() {
         _uiState.update { it.copy(isLoading = true, error = null) }
         try {
-            val root = resolveDirectory()
-            if (root.isBlank()) {
-                _uiState.update { it.copy(notRepository = true, isLoading = false) }
-                return
-            }
-
-            val data = loadReadData(root)
-            if (data == null) {
-                _uiState.update { it.copy(isLoading = false, error = context.getString(R.string.git_load_failed)) }
-                return
-            }
-
-            if (data.topLevel.isNotBlank()) {
-                // 目录本身是 git 仓库：正常展示，并后台补充子仓库。
-                val repos = detectReposFromData(root, data.submodules)
-                val effectiveRepo = _uiState.value.selectedRepo.ifBlank { root }
-                    .let { sel -> repos.firstOrNull { it.path == sel }?.path ?: root }
-                _uiState.update {
-                    it.copy(
-                        repos = repos,
-                        selectedRepo = effectiveRepo,
-                        directory = data.topLevel,
-                        branch = data.branch,
-                        branches = data.branches,
-                        remotes = data.remotes,
-                        isClean = data.changes.isEmpty(),
-                        changes = data.changes,
-                        commits = data.commits,
-                        selectedDiff = null,
-                        notRepository = false,
-                        isLoading = false,
-                        error = null,
-                    )
-                }
-                detectNestedReposAsync(root)
-            } else {
-                // 目录本身不是 git 仓库，但可能包含多个仓库：查找并让用户选择。
-                val nested = findNestedRepos(root)
-                if (nested.isEmpty()) {
-                    _uiState.update { it.copy(notRepository = true, isLoading = false, error = null) }
-                    return
-                }
-                val repos = nested.map { GitRepo(it, labelFor(it, root.trimEnd('/')), GitRepoKind.NESTED) }
-                val first = repos.first().path
-                val firstData = loadReadData(first)
-                if (firstData == null) {
-                    _uiState.update {
-                        it.copy(repos = repos, selectedRepo = first, isLoading = false, error = context.getString(R.string.git_load_failed))
-                    }
-                    return
-                }
-                _uiState.update {
-                    it.copy(
-                        repos = repos,
-                        selectedRepo = first,
-                        directory = firstData.topLevel.ifBlank { first },
-                        branch = firstData.branch,
-                        branches = firstData.branches,
-                        remotes = firstData.remotes,
-                        isClean = firstData.changes.isEmpty(),
-                        changes = firstData.changes,
-                        commits = firstData.commits,
-                        selectedDiff = null,
-                        notRepository = false,
-                        isLoading = false,
-                        error = null,
-                    )
-                }
+            // 首次进入可能存在目录解析/PTY 竞争，失败后自动重试一次。
+            if (!refreshOnce()) {
+                delay(600)
+                refreshOnce()
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to refresh git state", e)
@@ -242,12 +191,105 @@ class GitViewModel @Inject constructor(
         }
     }
 
+    /** 执行一次刷新。返回 true 表示已成功展示 Git 数据；false 表示需重试或确实不是仓库。 */
+    private suspend fun refreshOnce(): Boolean {
+        val root = resolveDirectory()
+        if (root.isBlank()) {
+            _uiState.update { it.copy(notRepository = false, isLoading = false, error = context.getString(R.string.git_load_failed)) }
+            return false
+        }
+
+        val data = loadReadData(root)
+        if (data == null) {
+            _uiState.update { it.copy(isLoading = false, error = context.getString(R.string.git_load_failed)) }
+            return false
+        }
+
+        if (data.topLevel.isNotBlank()) {
+            // 目录本身是 git 仓库：正常展示，并后台补充子仓库。
+            val repos = detectReposFromData(root, data.submodules)
+            val effectiveRepo = _uiState.value.selectedRepo.ifBlank { root }
+                .let { sel -> repos.firstOrNull { it.path == sel }?.path ?: root }
+            loadedCommitCount = data.commits.size
+            _uiState.update {
+                it.copy(
+                    repos = repos,
+                    selectedRepo = effectiveRepo,
+                    directory = data.topLevel,
+                    branch = data.branch,
+                    branches = data.branches,
+                    remotes = data.remotes,
+                    tags = data.tags,
+                    hasStash = data.hasStash,
+                    aheadCount = data.aheadCount,
+                    isClean = data.changes.isEmpty(),
+                    changes = data.changes,
+                    commits = data.commits,
+                    hasMoreCommits = data.commits.size >= COMMIT_PAGE_SIZE,
+                    isLoadingMoreCommits = false,
+                    selectedDiff = null,
+                    notRepository = false,
+                    isLoading = false,
+                    error = null,
+                )
+            }
+            detectNestedReposAsync(root)
+            return true
+        } else {
+            // 目录本身不是 git 仓库，但可能包含多个仓库：查找并让用户选择。
+            val nested = findNestedRepos(root)
+            if (nested.isEmpty()) {
+                _uiState.update { it.copy(notRepository = true, isLoading = false, error = null) }
+                return false
+            }
+            val repos = nested.map { GitRepo(it, labelFor(it, root.trimEnd('/')), GitRepoKind.NESTED) }
+            val first = repos.first().path
+            val firstData = loadReadData(first)
+            if (firstData == null) {
+                _uiState.update {
+                    it.copy(repos = repos, selectedRepo = first, isLoading = false, error = context.getString(R.string.git_load_failed))
+                }
+                return false
+            }
+            loadedCommitCount = firstData.commits.size
+            _uiState.update {
+                it.copy(
+                    repos = repos,
+                    selectedRepo = first,
+                    directory = firstData.topLevel.ifBlank { first },
+                    branch = firstData.branch,
+                    branches = firstData.branches,
+                    remotes = firstData.remotes,
+                    tags = firstData.tags,
+                    hasStash = firstData.hasStash,
+                    aheadCount = firstData.aheadCount,
+                    isClean = firstData.changes.isEmpty(),
+                    changes = firstData.changes,
+                    commits = firstData.commits,
+                    hasMoreCommits = firstData.commits.size >= COMMIT_PAGE_SIZE,
+                    isLoadingMoreCommits = false,
+                    selectedDiff = null,
+                    notRepository = false,
+                    isLoading = false,
+                    error = null,
+                )
+            }
+            return true
+        }
+    }
+
     private suspend fun resolveDirectory(): String {
         val configured = directory.trim().trimEnd('/')
         if (configured.isNotBlank()) return configured
-        return runCatching { api.getCurrentProject(conn).worktree.ifBlank { null } }.getOrNull()
-            ?: runCatching { api.listProjects(conn).firstOrNull()?.worktree.orEmpty() }.getOrNull()
-            ?: ""
+        // 回退到服务器当前项目；首次进入可能存在网络/时序竞争，重试几次。
+        repeat(3) { attempt ->
+            val current = runCatching { api.getCurrentProject(conn).worktree.ifBlank { null } }.getOrNull()
+            if (!current.isNullOrBlank()) return current
+            val first = runCatching { api.listProjects(conn).firstOrNull()?.worktree.orEmpty() }.getOrNull()
+            if (!first.isNullOrBlank()) return first
+            if (attempt < 2) delay(300)
+        }
+        return ""
     }
 
     /** 批量只读数据的解析结果。 */
@@ -259,6 +301,9 @@ class GitViewModel @Inject constructor(
         val changes: List<GitChange>,
         val commits: List<GitCommit>,
         val submodules: String,
+        val tags: List<String>,
+        val hasStash: Boolean,
+        val aheadCount: Int,
     )
 
     /** 在一个临时 PTY 中一次性执行所有只读 git 命令并解析，返回结构化数据；失败返回 null。 */
@@ -286,7 +331,13 @@ class GitViewModel @Inject constructor(
         }
         val commits = parseCommits(section(raw, "LOG"))
         val submodules = section(raw, "SUBMODULES")
-        return GitReadData(topLevel, branch, branches, remotes, mergedChanges, commits, submodules)
+        val tags = section(raw, "TAGS").lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .toList()
+        val hasStash = section(raw, "STASH").trim().isNotBlank()
+        val aheadCount = section(raw, "AHEAD").trim().toIntOrNull() ?: 0
+        return GitReadData(topLevel, branch, branches, remotes, mergedChanges, commits, submodules, tags, hasStash, aheadCount)
     }
 
     /** 选择仓库选择器中的另一个仓库。 */
@@ -297,14 +348,20 @@ class GitViewModel @Inject constructor(
             withContext(Dispatchers.IO) {
                 runCatching {
                     val data = loadReadData(path) ?: return@runCatching
+                    loadedCommitCount = data.commits.size
                     _uiState.update {
                         it.copy(
                             branch = data.branch,
                             branches = data.branches,
                             remotes = data.remotes,
+                            tags = data.tags,
+                            hasStash = data.hasStash,
+                            aheadCount = data.aheadCount,
                             isClean = data.changes.isEmpty(),
                             changes = data.changes,
                             commits = data.commits,
+                            hasMoreCommits = data.commits.size >= COMMIT_PAGE_SIZE,
+                            isLoadingMoreCommits = false,
                             selectedDiff = null,
                             isLoading = false,
                             error = null,
@@ -405,13 +462,21 @@ class GitViewModel @Inject constructor(
         }
     }
 
-    /** 提交全部变更（`git add -A` + `git commit -m`）。 */
-    fun commit(message: String) {
+    /**
+     * 提交变更。若 [paths] 非空则仅暂存并提交这些路径（`git add -- <paths>`），
+     * 否则使用 `git add -A` 提交全部变更。
+     */
+    fun commit(message: String, paths: List<String> = emptyList()) {
         val trimmed = message.trim()
         if (trimmed.isEmpty()) return
         runOperation("commit") {
             val root = _uiState.value.selectedRepo
-            val add = runCommandResult(gitCmd(root, "add -A"))
+            val addArgs = if (paths.isNotEmpty()) {
+                "add -- " + paths.joinToString(" ") { shQuote(it) }
+            } else {
+                "add -A"
+            }
+            val add = runCommandResult(gitCmd(root, addArgs))
             if (add.exitCode != 0) throw GitOperationException(add.output)
             val cm = runCommandResult(gitCmd(root, "-c core.editor=true commit -m ${shQuote(trimmed)}"))
             if (cm.exitCode != 0) throw GitOperationException(cm.output)
@@ -432,6 +497,64 @@ class GitViewModel @Inject constructor(
         val target = _uiState.value.branch?.takeIf { it.isNotBlank() } ?: "HEAD"
         val r = runCommandResult(gitCmd(root, "pull --rebase ${shQuote(remote)} ${shQuote(target)}"))
         if (r.exitCode != 0) throw GitOperationException(r.output)
+    }
+
+    /** 从所有 remote 拉取最新引用（`git fetch --all`）。 */
+    fun fetch() = runOperation("fetch") {
+        val r = runCommandResult(gitCmd(_uiState.value.selectedRepo, "fetch --all"))
+        if (r.exitCode != 0) throw GitOperationException(r.output)
+    }
+
+    /** 将当前未提交变更暂存到 stash（`git stash push -m <message>`）。 */
+    fun stash() = runOperation("stash") {
+        val root = _uiState.value.selectedRepo
+        val message = "opencode-stash-${System.currentTimeMillis()}"
+        val r = runCommandResult(gitCmd(root, "stash push -m ${shQuote(message)}"))
+        if (r.exitCode != 0) throw GitOperationException(r.output)
+    }
+
+    /** 弹出最近的 stash（`git stash pop`）。 */
+    fun stashPop() = runOperation("stashPop") {
+        val r = runCommandResult(gitCmd(_uiState.value.selectedRepo, "stash pop"))
+        if (r.exitCode != 0) throw GitOperationException(r.output)
+    }
+
+    /** 在当前 HEAD 创建 tag（`git tag <name>`）。 */
+    fun createTag(name: String) {
+        val tagName = name.trim()
+        if (tagName.isEmpty()) return
+        runOperation("createTag") {
+            val r = runCommandResult(gitCmd(_uiState.value.selectedRepo, "tag ${shQuote(tagName)}"))
+            if (r.exitCode != 0) throw GitOperationException(r.output)
+        }
+    }
+
+    /** 追加加载更多提交记录（`git log --skip=<已加载> -<页大小>`）。 */
+    fun loadMoreCommits() {
+        if (_uiState.value.isLoadingMoreCommits) return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                val root = _uiState.value.selectedRepo.ifBlank { return@withContext }
+                _uiState.update { it.copy(isLoadingMoreCommits = true) }
+                val skip = loadedCommitCount
+                val output = runCatching {
+                    runCommand(gitCmd(root, "log --skip=$skip -$COMMIT_PAGE_SIZE $logPrettyFormat"))
+                }.getOrDefault("")
+                val more = parseCommits(output)
+                if (more.isEmpty()) {
+                    _uiState.update { it.copy(hasMoreCommits = false, isLoadingMoreCommits = false) }
+                } else {
+                    loadedCommitCount += more.size
+                    _uiState.update {
+                        it.copy(
+                            commits = it.commits + more,
+                            hasMoreCommits = more.size >= COMMIT_PAGE_SIZE,
+                            isLoadingMoreCommits = false,
+                        )
+                    }
+                }
+            }
+        }
     }
 
     /** 切换到已有分支（`git checkout <branch>`）。 */
@@ -695,6 +818,9 @@ class GitViewModel @Inject constructor(
     private fun gitCmd(root: String, args: String): String =
         "git -c color.ui=false --no-pager -C ${shQuote(root)} $args"
 
+    /** `git log` 的输出格式：以单位分隔符拼接 hash/作者/日期/标题，与 [parseCommits] 对应。 */
+    private val logPrettyFormat = "--pretty=format:%H%x1f%an%x1f%ad%x1f%s --date=short"
+
     /**
      * 生成单次批量读取仓库只读数据的 shell 脚本，各段用 `__GIT_<NAME>__` 标记分隔，
      * 一次性在单个 PTY 中执行，避免逐命令新建 PTY 带来的慢与不稳定。
@@ -707,9 +833,12 @@ class GitViewModel @Inject constructor(
             append("printf '\\n__GIT_BRANCH__\\n'\n"); append("$g rev-parse --abbrev-ref HEAD\n")
             append("printf '\\n__GIT_STATUS__\\n'\n"); append("$g status --porcelain=v1\n")
             append("printf '\\n__GIT_NUMSTAT__\\n'\n"); append("$g diff --numstat\n")
-            append("printf '\\n__GIT_LOG__\\n'\n"); append("$g log -20 --pretty=format:%H%x1f%an%x1f%ad%x1f%s --date=short\n")
+            append("printf '\\n__GIT_LOG__\\n'\n"); append("$g log -$COMMIT_PAGE_SIZE $logPrettyFormat\n")
             append("printf '\\n__GIT_BRANCHES__\\n'\n"); append("$g branch\n")
             append("printf '\\n__GIT_REMOTES__\\n'\n"); append("$g remote\n")
+            append("printf '\\n__GIT_TAGS__\\n'\n"); append("$g tag --sort=-creatordate\n")
+            append("printf '\\n__GIT_STASH__\\n'\n"); append("$g stash list\n")
+            append("printf '\\n__GIT_AHEAD__\\n'\n"); append("$g rev-list --count @{upstream}..HEAD 2>/dev/null || printf '0\\n'\n")
             append("printf '\\n__GIT_SUBMODULES__\\n'\n"); append("$g submodule status --recursive\n")
         }
     }
@@ -787,110 +916,3 @@ class GitViewModel @Inject constructor(
     }
 }
 
-/**
- * 常驻 PTY 会话：为 Git 页复用单个终端连接，所有命令串行发送并读取到唯一标记，
- * 避免每条命令都新建 PTY（每次都要等远端 shell 启动，开销大）。
- */
-private class GitPtySession(
-    private val api: OpenCodeApi,
-    private val conn: ServerConnection,
-    private val directory: String,
-    private val scope: CoroutineScope,
-) {
-    private var socket: PtySocket? = null
-    private var ptyId: String? = null
-    private var readerJob: Job? = null
-    private val lock = Any()
-    private val mutex = Mutex()
-    private val buffer = StringBuilder()
-    private val tail = StringBuilder()
-    private var activeMarker: String? = null
-    private var activeDeferred: CompletableDeferred<Unit>? = null
-    private var connected = false
-
-    private suspend fun connect() {
-        if (connected) return
-        val dirArg = directory.takeIf { it.isNotBlank() }
-        val pty = api.createPty(conn, title = "git", cwd = dirArg, directory = dirArg)
-        ptyId = pty.id
-        val sock = api.openPtySocket(conn, pty.id, cursor = 0, directory = dirArg)
-        socket = sock
-        runCatching { api.updatePtySize(conn, pty.id, cols = 240, rows = 40, directory = dirArg) }
-
-        readerJob = scope.launch(Dispatchers.IO) {
-            try {
-                sock.readLoop { chunk ->
-                    synchronized(lock) {
-                        buffer.append(chunk)
-                        tail.append(chunk)
-                        if (tail.length > 4000) tail.delete(0, tail.length - 2000)
-                        val m = activeMarker
-                        if (m != null && tail.contains(m)) {
-                            activeDeferred?.complete(Unit)
-                        }
-                    }
-                }
-            } catch (_: Exception) {
-                connected = false
-            }
-        }
-
-        // 等远端 shell 起来，再换成轻量 sh 并关闭输入回显（保证标记只在真实输出里出现）。
-        delay(800)
-        sock.send("exec sh 2>/dev/null\n")
-        delay(300)
-        sock.send("stty -echo 2>/dev/null\n")
-        delay(200)
-
-        val ready = "OPENGIT_READY_${System.currentTimeMillis()}"
-        val deferred = CompletableDeferred<Unit>()
-        synchronized(lock) {
-            buffer.setLength(0)
-            tail.setLength(0)
-            activeMarker = ready
-            activeDeferred = deferred
-        }
-        sock.send("printf '$ready\\n'\n")
-        withTimeoutOrNull(10_000L) { deferred.await() }
-        synchronized(lock) {
-            activeMarker = null
-            activeDeferred = null
-            buffer.setLength(0)
-            tail.setLength(0)
-        }
-        connected = true
-    }
-
-    /** 串行执行 [script]，读取到 [endMarker] 后返回自本命令开始累积的原始输出。 */
-    suspend fun run(script: String, endMarker: String, timeoutMs: Long): String {
-        // 串行化：同一 PTY 同一时刻只能执行一条命令，避免并发命令互相覆盖 marker。
-        return mutex.withLock {
-            if (!connected) connect()
-            val sock = socket ?: return@withLock ""
-            val deferred = CompletableDeferred<Unit>()
-            synchronized(lock) {
-                buffer.setLength(0)
-                tail.setLength(0)
-                activeMarker = endMarker
-                activeDeferred = deferred
-            }
-            sock.send(script)
-            withTimeoutOrNull(timeoutMs) { deferred.await() }
-            synchronized(lock) {
-                activeMarker = null
-                activeDeferred = null
-            }
-            synchronized(lock) { buffer.toString() }
-        }
-    }
-
-    fun close() {
-        readerJob?.cancel()
-        val sock = socket
-        val id = ptyId
-        scope.launch(Dispatchers.IO) {
-            runCatching { sock?.close() }
-            if (id != null) runCatching { api.removePty(conn, id) }
-        }
-    }
-}

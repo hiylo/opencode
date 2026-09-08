@@ -69,7 +69,9 @@ fun GitScreen(
     var showCheckoutDialog by remember { mutableStateOf(false) }
     var showPushDialog by remember { mutableStateOf(false) }
     var showPullDialog by remember { mutableStateOf(false) }
+    var showTagDialog by remember { mutableStateOf(false) }
     var moreExpanded by remember { mutableStateOf(false) }
+    var selectedPaths by remember { mutableStateOf(setOf<String>()) }
 
     BackHandler(onBack = onNavigateBack)
 
@@ -119,6 +121,26 @@ fun GitScreen(
                                 text = { Text(stringResource(R.string.git_new_branch)) },
                                 onClick = { moreExpanded = false; showNewBranchDialog = true },
                             )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.git_fetch)) },
+                                onClick = { moreExpanded = false; viewModel.fetch() },
+                            )
+                            if (!state.isClean) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.git_stash)) },
+                                    onClick = { moreExpanded = false; viewModel.stash() },
+                                )
+                            }
+                            if (state.hasStash) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.git_stash_pop)) },
+                                    onClick = { moreExpanded = false; viewModel.stashPop() },
+                                )
+                            }
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.git_tags)) },
+                                onClick = { moreExpanded = false; showTagDialog = true },
+                            )
                         }
                     }
                 },
@@ -132,10 +154,15 @@ fun GitScreen(
                 state.error != null && !state.isLoading -> ErrorView(state.error!!, viewModel::refresh)
                 else -> GitContent(
                     state = state,
+                    selectedPaths = selectedPaths,
                     onSelectRepo = viewModel::selectRepo,
                     onLoadDiff = viewModel::loadDiff,
+                    onToggleSelect = { path ->
+                        selectedPaths = if (path in selectedPaths) selectedPaths - path else selectedPaths + path
+                    },
                     onLoadCommitDetail = viewModel::loadCommitDetail,
                     onLoadCommitFileDiff = viewModel::loadCommitFileDiff,
+                    onLoadMoreCommits = viewModel::loadMoreCommits,
                 )
             }
         }
@@ -146,8 +173,11 @@ fun GitScreen(
             onDismiss = { showCommitDialog = false },
             onConfirm = { message ->
                 showCommitDialog = false
-                viewModel.commit(message)
+                val paths = selectedPaths.toList()
+                selectedPaths = emptySet()
+                viewModel.commit(message, paths)
             },
+            selectedCount = selectedPaths.size,
             generating = generatingMessage,
             generatedMessage = generatedMessage,
             generateError = generateError,
@@ -199,6 +229,16 @@ fun GitScreen(
             },
         )
     }
+    if (showTagDialog) {
+        TagDialog(
+            tags = state.tags,
+            onDismiss = { showTagDialog = false },
+            onCreate = { name ->
+                showTagDialog = false
+                viewModel.createTag(name)
+            },
+        )
+    }
 }
 
 @Composable
@@ -247,10 +287,13 @@ private fun ErrorView(error: String, onRetry: () -> Unit) {
 @Composable
 private fun GitContent(
     state: GitUiState,
+    selectedPaths: Set<String>,
     onSelectRepo: (String) -> Unit,
     onLoadDiff: (String) -> Unit,
+    onToggleSelect: (String) -> Unit,
     onLoadCommitDetail: (GitCommit) -> Unit,
     onLoadCommitFileDiff: (String, String) -> Unit,
+    onLoadMoreCommits: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -263,7 +306,7 @@ private fun GitContent(
 
         BranchStatusRow(state)
 
-        ChangesSection(state.changes, state.selectedDiff, onLoadDiff)
+        ChangesSection(state.changes, state.selectedDiff, selectedPaths, onLoadDiff, onToggleSelect)
 
         CommitsSection(
             commits = state.commits,
@@ -272,8 +315,11 @@ private fun GitContent(
             commitDiff = state.commitDiff,
             isLoadingCommit = state.isLoadingCommit,
             commitFileDiff = state.commitFileDiff,
+            hasMoreCommits = state.hasMoreCommits,
+            isLoadingMoreCommits = state.isLoadingMoreCommits,
             onLoadCommitDetail = onLoadCommitDetail,
             onLoadCommitFileDiff = onLoadCommitFileDiff,
+            onLoadMoreCommits = onLoadMoreCommits,
         )
     }
 }
@@ -350,6 +396,14 @@ private fun BranchStatusRow(state: GitUiState) {
                 fontWeight = FontWeight.SemiBold,
             )
         }
+        if (state.aheadCount > 0) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = stringResource(R.string.git_ahead_count, state.aheadCount),
+                style = MaterialTheme.typography.bodyMedium,
+                color = StatusWarning,
+            )
+        }
         Spacer(Modifier.weight(1f))
         if (state.isClean) {
             Text(
@@ -371,7 +425,9 @@ private fun BranchStatusRow(state: GitUiState) {
 private fun ChangesSection(
     changes: List<GitChange>,
     selectedDiff: GitFileDiff?,
+    selectedPaths: Set<String>,
     onLoadDiff: (String) -> Unit,
+    onToggleSelect: (String) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
@@ -386,7 +442,13 @@ private fun ChangesSection(
             )
         } else {
             changes.forEach { change ->
-                ChangeRow(change = change, selected = selectedDiff?.path == change.path, onClick = { onLoadDiff(change.path) })
+                ChangeRow(
+                    change = change,
+                    selected = selectedDiff?.path == change.path,
+                    checked = change.path in selectedPaths,
+                    onClick = { onLoadDiff(change.path) },
+                    onCheckedChange = { onToggleSelect(change.path) },
+                )
                 if (selectedDiff?.path == change.path) {
                     DiffView(selectedDiff)
                 }
@@ -396,7 +458,13 @@ private fun ChangesSection(
 }
 
 @Composable
-private fun ChangeRow(change: GitChange, selected: Boolean, onClick: () -> Unit) {
+private fun ChangeRow(
+    change: GitChange,
+    selected: Boolean,
+    checked: Boolean,
+    onClick: () -> Unit,
+    onCheckedChange: (Boolean) -> Unit,
+) {
     val (color, label) = when (change.status) {
         "added", "untracked" -> StatusConnected to stringResource(R.string.git_status_added)
         "deleted" -> StatusError to stringResource(R.string.git_status_deleted)
@@ -412,6 +480,12 @@ private fun ChangeRow(change: GitChange, selected: Boolean, onClick: () -> Unit)
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            Checkbox(
+                checked = checked,
+                onCheckedChange = onCheckedChange,
+                modifier = Modifier.size(24.dp),
+            )
+            Spacer(Modifier.width(4.dp))
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelSmall,
@@ -492,8 +566,11 @@ private fun CommitsSection(
     commitDiff: String,
     isLoadingCommit: Boolean,
     commitFileDiff: GitFileDiff?,
+    hasMoreCommits: Boolean,
+    isLoadingMoreCommits: Boolean,
     onLoadCommitDetail: (GitCommit) -> Unit,
     onLoadCommitFileDiff: (String, String) -> Unit,
+    onLoadMoreCommits: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -549,6 +626,19 @@ private fun CommitsSection(
                             )
                         }
                     }
+                }
+            }
+            if (hasMoreCommits) {
+                TextButton(
+                    onClick = onLoadMoreCommits,
+                    enabled = !isLoadingMoreCommits,
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                ) {
+                    if (isLoadingMoreCommits) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text(stringResource(R.string.git_load_more))
                 }
             }
         }
@@ -675,6 +765,7 @@ private fun FileDiffView(fileDiff: GitFileDiff) {
 private fun CommitDialog(
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit,
+    selectedCount: Int,
     generating: Boolean,
     generatedMessage: String?,
     generateError: String?,
@@ -692,6 +783,14 @@ private fun CommitDialog(
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
             )
             Spacer(Modifier.height(12.dp))
+            if (selectedCount > 0) {
+                Text(
+                    stringResource(R.string.git_commit_selected, selectedCount),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = StatusWarning,
+                )
+                Spacer(Modifier.height(8.dp))
+            }
             OutlinedTextField(
                 value = message,
                 onValueChange = { message = it },
@@ -869,6 +968,72 @@ private fun RemoteDialog(
                 }
             }
             HorizontalDivider()
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(onClick = onDismiss) {
+                    Text(stringResource(R.string.close))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TagDialog(
+    tags: List<String>,
+    onDismiss: () -> Unit,
+    onCreate: (String) -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    AppDialog(onDismissRequest = onDismiss, modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(vertical = 12.dp)) {
+            Text(
+                text = stringResource(R.string.git_tags),
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
+            )
+            HorizontalDivider()
+            if (tags.isEmpty()) {
+                Text(
+                    stringResource(R.string.git_no_tags),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+                )
+            } else {
+                tags.forEach { tag ->
+                    Text(
+                        text = tag,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 24.dp, vertical = 8.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            HorizontalDivider()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text(stringResource(R.string.git_tag_name_hint)) },
+                    singleLine = true,
+                )
+                Spacer(Modifier.width(8.dp))
+                AppPrimaryButton(onClick = { onCreate(name) }, enabled = name.isNotBlank()) {
+                    Text(stringResource(R.string.git_confirm_create))
+                }
+            }
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.End,
