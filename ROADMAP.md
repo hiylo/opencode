@@ -4,54 +4,105 @@ Copyright(c) 2016 - Present, Clouds Studio Holding Limited. All rights reserved.
 
 # Roadmap
 
-> 本文件是方向性规划，**非承诺**。优先级与时间可能调整。
-> 状态标记：✅ 已发布 · 🚧 进行中 · ⏳ 计划中
-> 相关 issue 用 `#编号` 链接；版本用 GitHub Milestone 跟踪。
+> This file is directional planning, **not a commitment**. Priorities and timing may change.
+> Status markers: ✅ Released · 🚧 In progress · ⏳ Planned
+> Related issues link with `#number`; versions are tracked with GitHub Milestones.
 
-## 架构约定
+## Architecture conventions
 
-- **纯 Android 客户端，不改后端**。
-- **常驻 PTY**：连接服务器时建立一条持久终端会话，Git、文件编辑、硬件信息、重启等操作
-  **共用同一条 PTY**，避免重复 shell 启动开销。
-- 已有 REST API（`/config`、`/session/status`、`/global/health` 等）优先用 REST；REST 没有的
-  能力统一走常驻 PTY 跑 shell 命令。
+- **A universal client — never change the official server, only improve the client.**
+- **Persistent PTY**: when connecting to a server, establish one long-lived terminal session that
+  Git, file editing, hardware info, restart, and other operations **share**, avoiding repeated
+  shell startup overhead.
+- Prefer existing REST APIs (`/config`, `/session/status`, `/global/health`, etc.); anything REST
+  cannot do goes through the persistent PTY running shell commands.
 
-## Now — 1.1.0
+## 1.1.0 (Released ✅)
 
-### 服务器与服务管理 — [#16](https://github.com/hiylo/opencode/issues/16)
+### Server & service management — [#16](https://github.com/hiylo/opencode/issues/16)
 
-- [ ] 常驻 PTY 提升为「连接级共享会话」（当前是 Git 页作用域）
-- [ ] 服务器基本信息：CPU / 内存 / 磁盘（PTY 跑 `free` / `df` / `/proc`）
-- [ ] 服务基本信息：版本号、运行中的活跃会话（`/global/health` + `/session/status`）
-- [ ] 服务配置查看与修改（`GET/PATCH /config`、`/global/config`）
-- [ ] 服务重启（PTY 跑重启命令，可操作性取决于服务端部署方式/权限）
-- [ ] 服务器健康监控仪表盘
+- [x] Persistent PTY promoted to a "connection-level shared session" (was previously scoped to the Git page)
+- [x] Server basics: CPU / memory / disk (PTY runs `free` / `df` / `/proc`)
+- [x] Service basics: version, active sessions (`/global/health` + `/session/status`)
+- [x] Service config view & edit (`GET/PATCH /config`, `/global/config`)
+- [x] Service restart (PTY runs the restart command; feasibility depends on deployment/permissions)
+- [x] Server health monitoring dashboard
 
-### 文件编辑 — [#17](https://github.com/hiylo/opencode/issues/17)
+### File editing — [#17](https://github.com/hiylo/opencode/issues/17)
 
-- [ ] 文件浏览器支持编辑与保存（写入走常驻 PTY，如 `cat > path` / `tee`）
-- [ ] 撤销 / 重做、保存冲突提示
+- [x] File browser supports edit & save (writes go through the persistent PTY, e.g. `cat > path` / `tee`)
+- [x] Undo / redo, save-conflict prompt
 
-### Git 深化 — [#18](https://github.com/hiylo/opencode/issues/18)
+### Git deepening — [#18](https://github.com/hiylo/opencode/issues/18)
 
-- [ ] 选择性暂存（勾选文件 / hunk）
-- [ ] `fetch` / `stash` / `tag`
-- [ ] 提交历史加载更多（分页）
-- [ ] 未推送提交提示
+- [x] Selective staging (check files / hunks)
+- [x] `fetch` / `stash` / `tag`
+- [x] Commit history load-more (pagination)
+- [x] Unpushed-commit indicator
 
-### 端侧模型扩展 — [#19](https://github.com/hiylo/opencode/issues/19)
+### On-device model expansion — [#19](https://github.com/hiylo/opencode/issues/19)
 
-- [ ] 代码补全（inline completion）
-- [ ] 对话总结 / 代码解释
+- [x] Code completion (inline completion)
+- [x] Conversation summary / code explanation
 
-### 聊天体验 — [#20](https://github.com/hiylo/opencode/issues/20)
+### Chat experience — [#20](https://github.com/hiylo/opencode/issues/20)
 
-- [ ] Markdown 增强（mermaid 图、图片内联、代码块复制/行号/运行）
-- [ ] 消息操作（编辑重发、重新生成、停止生成）
-- [ ] 会话内搜索
+- [x] Markdown enhancements (mermaid diagrams, inline images, code-block copy/line numbers/run)
+- [x] Message actions (edit & resend, regenerate, stop)
+- [x] In-session search
+
+## Now — 1.2.0
+
+> Everything below is a **pure client** change — the opencode server is untouched.
+> Exceptions: voice input (relies on ASR capability) and image understanding (relies on the model
+> supporting vision); neither involves server-side code.
+
+### Sessions & project management
+
+- [ ] Session search / filter (by title, directory, time)
+- [ ] Batch archive / delete
+- [ ] Session pinning with drag-to-reorder
+- [ ] Collapsible project groups, quick entry for recent projects
+
+### Chat experience
+
+- [ ] Edit & resend after editing a message
+- [ ] Message quoting / reply (@ a message)
+- [ ] Long-press message menu: copy / re-edit & resend / quote & reply
+- [ ] Markdown table rendering
+- [ ] One-tap code-block copy + language label + long-code collapse
+- [ ] Streaming typewriter optimization, resume on reconnect
+- [ ] Send feedback: vibration / sound after sending, typing-cursor animation while generating
+- [ ] Timestamp grouping: message dividers by time (today / yesterday / earlier)
+- [ ] Scroll-to-bottom button polish: unread-new-message red dot
+- [ ] Empty state: new-session onboarding placeholder (quick commands / suggestions)
+- [ ] Voice input (ASR: uses Android's built-in `SpeechRecognizer`, free / offline / no third-party
+  network service)
+- [ ] Image understanding (multimodal: depends on whether the selected model supports vision; the
+  image entry is enabled only for vision-capable models, otherwise show "model does not support
+  vision")
+
+### Agents / tools
+
+- [ ] Permission-request cards + "always allow"
+- [ ] Todo list with live progress bars
+- [ ] Sub-agent tree / timeline view
+- [ ] Custom Slash command quick panel
+
+### Servers & connectivity
+
+- [ ] Multiple servers online simultaneously, one-tap switching
+- [ ] SSH tunnel direct connection, connection health monitoring
+- [ ] Message pagination / history-loading optimization (load-older already exists)
+
+### Localization & experience
+
+- [ ] Independent Dark / AMOLED theme toggles, follow-system
+- [ ] Finer-grained font size / line height
+- [ ] Global search: title / directory / time (across sessions and projects)
+- [ ] Session export (Markdown / JSON)
 
 ## Later — Backlog
 
-- [ ] server 端 git REST 端点（可选优化，非必须） — [#21](https://github.com/hiylo/opencode/issues/21)
-- [ ] 多设备会话同步与推送 — [#22](https://github.com/hiylo/opencode/issues/22)
-- [ ] 工程质量（单元测试、性能、无障碍、平板/折叠屏适配） — [#23](https://github.com/hiylo/opencode/issues/23)
+- [ ] Full-text message search (local FTS, data-size TBD)
+- [ ] Engineering quality (unit tests, performance, accessibility, tablet/foldable adaptation) — [#23](https://github.com/hiylo/opencode/issues/23)
