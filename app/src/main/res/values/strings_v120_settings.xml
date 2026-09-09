@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Theme -->
+    <string name="settings_theme_amoled">AMOLED</string>
+
+    <!-- Chat display -->
+    <string name="settings_line_height">Chat line spacing</string>
+    <string name="settings_line_height_value">%1$s×</string>
+
+    <!-- Data -->
+    <string name="settings_section_data">Data</string>
+    <string name="settings_export_session">Export current session</string>
+    <string name="settings_export_session_desc">Save the conversation as Markdown or JSON</string>
+    <string name="settings_export_hint">Export is available from the session screen</string>
+</resources>

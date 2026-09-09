@@ -10,6 +10,7 @@
 package org.hiylo.opencode.ui.screens.settings
 
 import android.os.Build
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,6 +26,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CloudDownload
@@ -96,9 +98,10 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val currentLanguage by viewModel.appLanguage.collectAsState()
-    val currentTheme by viewModel.appTheme.collectAsState()
+    val currentTheme by viewModel.themeMode.collectAsState()
     val dynamicColor by viewModel.dynamicColor.collectAsState()
     val chatFontSize by viewModel.chatFontSize.collectAsState()
+    val chatLineHeight by viewModel.chatLineHeight.collectAsState()
     val notificationsEnabled by viewModel.notificationsEnabled.collectAsState()
 
     val initialMessageCount by viewModel.initialMessageCount.collectAsState()
@@ -129,11 +132,17 @@ fun SettingsScreen(
     val modelDownloadProgress by viewModel.modelDownloadProgress.collectAsState()
     val modelReady by viewModel.modelReady.collectAsState()
     val modelDownloadFailed by viewModel.modelDownloadFailed.collectAsState()
+    val asrModelDownloading by viewModel.asrModelDownloading.collectAsState()
+    val asrModelDownloadProgress by viewModel.asrModelDownloadProgress.collectAsState()
+    val asrModelReady by viewModel.asrModelReady.collectAsState()
+    val asrModelDownloadFailed by viewModel.asrModelDownloadFailed.collectAsState()
+    val asrSupported = viewModel.asrSupported
 
     var showLanguageDialog by remember { mutableStateOf(false) }
     var showThemeDialog by remember { mutableStateOf(false) }
     var showAccentDialog by remember { mutableStateOf(false) }
     var showFontSizeDialog by remember { mutableStateOf(false) }
+    var showLineHeightDialog by remember { mutableStateOf(false) }
     var showMessageCountDialog by remember { mutableStateOf(false) }
     var showMessageHistoryResponseLimitDialog by remember { mutableStateOf(false) }
     var showRecentDirectoryCountDialog by remember { mutableStateOf(false) }
@@ -255,6 +264,49 @@ fun SettingsScreen(
                     viewModel.downloadModel()
                 },
             )
+
+            // On-device voice recognition (ASR) model download — enables the mic button in chat
+            if (asrSupported) {
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.settings_asr_model_title)) },
+                    supportingContent = {
+                        when {
+                            asrModelDownloading -> {
+                                Text(stringResource(R.string.chat_suggestions_model_downloading, asrModelDownloadProgress))
+                            }
+                            asrModelReady -> Text(stringResource(R.string.settings_asr_model_ready))
+                            asrModelDownloadFailed -> Text(stringResource(R.string.settings_on_device_model_download_failed))
+                            else -> Text(stringResource(R.string.settings_asr_model_desc))
+                        }
+                    },
+                    leadingContent = { Icon(Icons.Default.Mic, contentDescription = null) },
+                    trailingContent = {
+                        when {
+                            asrModelDownloading -> {
+                                LinearProgressIndicator(
+                                    progress = { asrModelDownloadProgress / 100f },
+                                    modifier = Modifier.width(90.dp).height(4.dp),
+                                )
+                            }
+                            asrModelReady -> {
+                                Icon(
+                                    Icons.Default.Check,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                            else -> {
+                                TextButton(onClick = viewModel::downloadAsrModel) {
+                                    Text(stringResource(R.string.chat_suggestions_download_model))
+                                }
+                            }
+                        }
+                    },
+                    modifier = Modifier.clickable(enabled = !asrModelDownloading && !asrModelReady) {
+                        viewModel.downloadAsrModel()
+                    },
+                )
+            }
 
             // Reconnect mode
             ListItem(
@@ -431,6 +483,16 @@ fun SettingsScreen(
                     Icon(Icons.Default.FormatSize, contentDescription = null)
                 },
                 modifier = Modifier.clickable { showFontSizeDialog = true }
+            )
+
+            // Line spacing
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_line_height)) },
+                supportingContent = { Text(getLineHeightDisplayName(chatLineHeight)) },
+                leadingContent = {
+                    Icon(Icons.Default.UnfoldMore, contentDescription = null)
+                },
+                modifier = Modifier.clickable { showLineHeightDialog = true }
             )
 
             ListItem(
@@ -684,6 +746,28 @@ fun SettingsScreen(
 
             SettingsCardSpacer()
 
+            // ======== Data ========
+            SectionHeader(stringResource(R.string.settings_section_data))
+
+            SettingsCard {
+            // Export current session (entry point placeholder — session data lives in ChatScreen)
+            val exportHint = stringResource(R.string.settings_export_hint)
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_export_session)) },
+                supportingContent = { Text(stringResource(R.string.settings_export_session_desc)) },
+                leadingContent = { Icon(Icons.Default.Send, contentDescription = null) },
+                modifier = Modifier.clickable {
+                    Toast.makeText(
+                        settingsView.context,
+                        exportHint,
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+            )
+            }
+
+            SettingsCardSpacer()
+
             // ======== Advanced ========
             SectionHeader(stringResource(R.string.settings_section_advanced))
 
@@ -702,7 +786,7 @@ fun SettingsScreen(
             ThemePickerDialog(
                 currentTheme = currentTheme,
                 onThemeSelected = { theme ->
-                    viewModel.setTheme(theme)
+                    viewModel.setThemeMode(theme)
                     showThemeDialog = false
                 },
                 onDismiss = { showThemeDialog = false }
@@ -739,6 +823,17 @@ fun SettingsScreen(
                     showFontSizeDialog = false
                 },
                 onDismiss = { showFontSizeDialog = false }
+            )
+        }
+
+        if (showLineHeightDialog) {
+            LineHeightDialog(
+                currentMultiplier = chatLineHeight,
+                onMultiplierSelected = { multiplier ->
+                    viewModel.setChatLineHeight(multiplier)
+                    showLineHeightDialog = false
+                },
+                onDismiss = { showLineHeightDialog = false }
             )
         }
 
@@ -1193,7 +1288,8 @@ private fun ThemePickerDialog(
         options = listOf(
             "system" to stringResource(R.string.settings_theme_system),
             "light" to stringResource(R.string.settings_theme_light),
-            "dark" to stringResource(R.string.settings_theme_dark)
+            "dark" to stringResource(R.string.settings_theme_dark),
+            "amoled" to stringResource(R.string.settings_theme_amoled)
         ),
         selectedKey = currentTheme,
         onSelect = onThemeSelected,
@@ -1314,6 +1410,42 @@ private fun FontSizePickerDialog(
         onSelect = onSizeSelected,
         onDismiss = onDismiss
     )
+}
+
+@Composable
+private fun LineHeightDialog(
+    currentMultiplier: Float,
+    onMultiplierSelected: (Float) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var multiplier by remember(currentMultiplier) {
+        mutableFloatStateOf(currentMultiplier.coerceIn(1f, 2f))
+    }
+
+    AppDialog(onDismissRequest = onDismiss, modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(stringResource(R.string.settings_line_height), style = MaterialTheme.typography.titleMedium)
+            Text(
+                stringResource(R.string.settings_line_height_value, formatMultiplier(multiplier)),
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            Slider(
+                value = multiplier,
+                onValueChange = { multiplier = it },
+                valueRange = 1f..2f,
+            )
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                AppSecondaryButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) }
+                Spacer(modifier = Modifier.width(8.dp))
+                AppPrimaryButton(onClick = { onMultiplierSelected(multiplier) }) {
+                    Text(stringResource(R.string.server_save))
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -1540,6 +1672,7 @@ private fun getThemeDisplayName(theme: String): String {
         "system" -> stringResource(R.string.settings_theme_system)
         "light" -> stringResource(R.string.settings_theme_light)
         "dark" -> stringResource(R.string.settings_theme_dark)
+        "amoled" -> stringResource(R.string.settings_theme_amoled)
         else -> theme
     }
 }
@@ -1552,6 +1685,15 @@ private fun getFontSizeDisplayName(size: String): String {
         "large" -> stringResource(R.string.settings_font_size_large)
         else -> size
     }
+}
+
+@Composable
+private fun getLineHeightDisplayName(multiplier: Float): String {
+    return stringResource(R.string.settings_line_height_value, formatMultiplier(multiplier))
+}
+
+private fun formatMultiplier(multiplier: Float): String {
+    return String.format(Locale.US, "%.1f", multiplier)
 }
 
 @Composable

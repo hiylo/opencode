@@ -29,14 +29,14 @@ import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
 private val DarkColorScheme = darkColorScheme(
-    primary = Color(0xFF9DA3FF),
-    onPrimary = Color(0xFF1A1B4B),
-    primaryContainer = Color(0xFF2D2F6E),
-    onPrimaryContainer = Color(0xFFDEE0FF),
-    secondary = Color(0xFFCAC3DC),
-    onSecondary = Color(0xFF322E41),
-    secondaryContainer = Color(0xFF494559),
-    onSecondaryContainer = Color(0xFFE7DFF8),
+    primary = Color(0xFF6366F1),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFF312E81),
+    onPrimaryContainer = Color(0xFFE0E7FF),
+    secondary = Color(0xFF8B5CF6),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFF4C1D95),
+    onSecondaryContainer = Color(0xFFF3E8FF),
     tertiary = Color(0xFF7DD0E1),
     onTertiary = Color(0xFF003640),
     surface = Color(0xFF121218),
@@ -53,14 +53,14 @@ private val DarkColorScheme = darkColorScheme(
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = Color(0xFF4F52B8),
+    primary = Color(0xFF6366F1),
     onPrimary = Color(0xFFFFFFFF),
-    primaryContainer = Color(0xFFE0E0FF),
-    onPrimaryContainer = Color(0xFF0C0F6A),
-    secondary = Color(0xFF5D5B71),
+    primaryContainer = Color(0xFFE0E7FF),
+    onPrimaryContainer = Color(0xFF1E1B4B),
+    secondary = Color(0xFF8B5CF6),
     onSecondary = Color(0xFFFFFFFF),
-    secondaryContainer = Color(0xFFE3DFF9),
-    onSecondaryContainer = Color(0xFF1A182C),
+    secondaryContainer = Color(0xFFF3E8FF),
+    onSecondaryContainer = Color(0xFF3B0764),
     tertiary = Color(0xFF006879),
     onTertiary = Color(0xFFFFFFFF),
     surface = Color(0xFFFCF8FF),
@@ -109,8 +109,8 @@ internal data class AccentPalette(
 /** Selectable accent colors. "indigo" is the brand default and matches the base schemes. */
 internal val OpenCodeAccents: Map<String, AccentPalette> = mapOf(
     "indigo" to AccentPalette(
-        light = AccentRoles(Color(0xFF4F52B8), Color(0xFFFFFFFF), Color(0xFFE0E0FF), Color(0xFF0C0F6A)),
-        dark = AccentRoles(Color(0xFF9DA3FF), Color(0xFF1A1B4B), Color(0xFF2D2F6E), Color(0xFFDEE0FF)),
+        light = AccentRoles(Color(0xFF6366F1), Color(0xFFFFFFFF), Color(0xFFE0E7FF), Color(0xFF1E1B4B)),
+        dark = AccentRoles(Color(0xFF6366F1), Color(0xFFFFFFFF), Color(0xFF312E81), Color(0xFFE0E7FF)),
     ),
     "violet" to AccentPalette(
         light = AccentRoles(Color(0xFF7C3AED), Color(0xFFFFFFFF), Color(0xFFEDE9FE), Color(0xFF4C1D95)),

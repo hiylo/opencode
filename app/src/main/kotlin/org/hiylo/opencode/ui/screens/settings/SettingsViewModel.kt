@@ -16,9 +16,11 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import org.hiylo.opencode.data.repository.SettingsRepository
 import org.hiylo.opencode.ml.MnnLlm
+import org.hiylo.opencode.ml.MnnAsr
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -44,8 +46,26 @@ class SettingsViewModel @Inject constructor(
     private val _modelDownloadFailed = MutableStateFlow(false)
     val modelDownloadFailed: StateFlow<Boolean> = _modelDownloadFailed
 
+    // ---- 语音识别（ASR）模型 ----
+
+    private val _asrModelDownloading = MutableStateFlow(false)
+    val asrModelDownloading: StateFlow<Boolean> = _asrModelDownloading
+
+    private val _asrModelDownloadProgress = MutableStateFlow(0)
+    val asrModelDownloadProgress: StateFlow<Int> = _asrModelDownloadProgress
+
+    private val _asrModelReady = MutableStateFlow(false)
+    val asrModelReady: StateFlow<Boolean> = _asrModelReady
+
+    private val _asrModelDownloadFailed = MutableStateFlow(false)
+    val asrModelDownloadFailed: StateFlow<Boolean> = _asrModelDownloadFailed
+
+    /** 当前设备是否支持端侧语音识别（arm64-v8a + JNI 库可用）。 */
+    val asrSupported: Boolean = MnnAsr.isSupported()
+
     init {
         prepareModel()
+        _asrModelReady.value = MnnAsr.modelDirectory(context) != null
     }
 
     /**
@@ -79,6 +99,28 @@ class SettingsViewModel @Inject constructor(
     fun refreshModelStatus() {
         _modelReady.value = MnnLlm.modelDirectory(context) != null
         if (_modelReady.value) _modelDownloadFailed.value = false
+    }
+
+    /** Re-checks whether the ASR model is present on disk. */
+    fun refreshAsrModelStatus() {
+        _asrModelReady.value = MnnAsr.modelDirectory(context) != null
+        if (_asrModelReady.value) _asrModelDownloadFailed.value = false
+    }
+
+    /** 下载端侧语音识别（ASR）模型。 */
+    fun downloadAsrModel() {
+        if (_asrModelDownloading.value || _asrModelReady.value) return
+        viewModelScope.launch {
+            _asrModelDownloading.value = true
+            _asrModelDownloadProgress.value = 0
+            _asrModelDownloadFailed.value = false
+            val ok = MnnAsr.downloadModel(context) { percent ->
+                _asrModelDownloadProgress.value = percent
+            }
+            _asrModelDownloading.value = false
+            _asrModelReady.value = ok
+            if (!ok) _asrModelDownloadFailed.value = true
+        }
     }
 
     /**
@@ -115,6 +157,24 @@ class SettingsViewModel @Inject constructor(
         initialValue = "system"
     )
 
+    val amoledDark = settingsRepository.amoledDark.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = false
+    )
+
+    /**
+     * Four-way theme mode: "system", "light", "dark", or "amoled".
+     * "amoled" is a first-class choice that maps to dark theme + pure black surfaces.
+     */
+    val themeMode: StateFlow<String> = combine(appTheme, amoledDark) { theme, amoled ->
+        if (theme == "dark" && amoled) "amoled" else theme
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = "system"
+    )
+
     val dynamicColor = settingsRepository.dynamicColor.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -125,6 +185,12 @@ class SettingsViewModel @Inject constructor(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = "medium"
+    )
+
+    val chatLineHeight = settingsRepository.chatLineHeight.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = 1f
     )
 
     val notificationsEnabled = settingsRepository.notificationsEnabled.stateIn(
@@ -158,12 +224,6 @@ class SettingsViewModel @Inject constructor(
     )
 
     val confirmBeforeSend = settingsRepository.confirmBeforeSend.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = false
-    )
-
-    val amoledDark = settingsRepository.amoledDark.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = false
@@ -289,6 +349,29 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Sets the four-way theme mode. "amoled" is persisted as dark theme + AMOLED surfaces;
+     * the other values map directly onto the stored app theme.
+     */
+    fun setThemeMode(mode: String) {
+        viewModelScope.launch {
+            when (mode) {
+                "amoled" -> {
+                    settingsRepository.setAppTheme("dark")
+                    settingsRepository.setAmoledDark(true)
+                }
+                "dark" -> {
+                    settingsRepository.setAppTheme("dark")
+                    settingsRepository.setAmoledDark(false)
+                }
+                else -> {
+                    settingsRepository.setAppTheme(mode)
+                    settingsRepository.setAmoledDark(false)
+                }
+            }
+        }
+    }
+
     fun setDynamicColor(enabled: Boolean) {
         viewModelScope.launch {
             settingsRepository.setDynamicColor(enabled)
@@ -298,6 +381,12 @@ class SettingsViewModel @Inject constructor(
     fun setChatFontSize(size: String) {
         viewModelScope.launch {
             settingsRepository.setChatFontSize(size)
+        }
+    }
+
+    fun setChatLineHeight(multiplier: Float) {
+        viewModelScope.launch {
+            settingsRepository.setChatLineHeight(multiplier)
         }
     }
 

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="menu_export_markdown">导出为 Markdown</string>
+    <string name="menu_export_json">导出为 JSON</string>
+</resources>
