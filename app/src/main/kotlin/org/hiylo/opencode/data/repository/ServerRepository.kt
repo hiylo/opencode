@@ -15,14 +15,18 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.jcraft.jsch.JSch
+import com.jcraft.jsch.Session
 import org.hiylo.opencode.data.api.OpenCodeApi
 import org.hiylo.opencode.data.api.ServerConnection
 import org.hiylo.opencode.domain.model.ServerConfig
 import org.hiylo.opencode.domain.model.ServerHealth
 import org.hiylo.opencode.data.sync.SyncServer
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.util.UUID
@@ -31,6 +35,7 @@ import javax.inject.Singleton
 
 private const val TAG = "ServerRepository"
 private const val SERVERS_KEY = "servers"
+private const val SSH_CONNECT_TIMEOUT_MS = 15_000
 
 /** Legacy local server URL reserved by the previous Termux runtime feature; excluded from sync. */
 internal const val LEGACY_LOCAL_SERVER_URL = "http://127.0.0.1:4096"
@@ -122,7 +127,10 @@ class ServerRepository @Inject constructor(
         username: String = "opencode",
         password: String? = null,
         name: String? = null,
-        autoConnect: Boolean = false
+        autoConnect: Boolean = false,
+        sshPort: Int = 22,
+        sshUsername: String = "",
+        sshPassword: String? = null
     ): ServerConfig {
         val server = ServerConfig(
             id = UUID.randomUUID().toString(),
@@ -131,6 +139,9 @@ class ServerRepository @Inject constructor(
             password = password,
             name = name,
             autoConnect = autoConnect,
+            sshPort = sshPort,
+            sshUsername = sshUsername,
+            sshPassword = sshPassword,
             lastConnected = null,
             isHealthy = false
         )
@@ -174,28 +185,52 @@ class ServerRepository @Inject constructor(
      * Check server health
      */
     suspend fun checkHealth(server: ServerConfig): Result<ServerHealth> {
+        var sshSession: Session? = null
         return try {
-            val conn = ServerConnection.from(server.url, server.username, server.password)
+            val conn = if (server.useSsh) {
+                val (connection, session) = openSshTunnel(server)
+                sshSession = session
+                connection
+            } else {
+                ServerConnection.from(server.url, server.username, server.password)
+            }
             val health = api.getHealth(conn)
-            
+
             // Update server health status
             val updatedServer = server.copy(
                 isHealthy = health.healthy,
                 lastConnected = System.currentTimeMillis()
             )
             updateServer(updatedServer)
-            
+
             Result.success(health)
         } catch (e: Exception) {
             Log.e(TAG, "Server health check failed", e)
-            
+
             // Mark as unhealthy
             val updatedServer = server.copy(isHealthy = false)
             updateServer(updatedServer)
-            
+
             Result.failure(e)
+        } finally {
+            try { sshSession?.disconnect() } catch (_: Exception) { }
         }
     }
+
+    /** 为配置了 SSH 的服务器建立临时本地端口转发，返回转发后的连接与 SSH 会话。 */
+    private suspend fun openSshTunnel(server: ServerConfig): Pair<ServerConnection, Session> =
+        withContext(Dispatchers.IO) {
+            val host = server.host
+            val openCodePort = server.openCodePort
+            val jsch = JSch()
+            val session = jsch.getSession(server.sshUsername, host, server.sshPort)
+            session.setPassword(server.sshPassword ?: "")
+            session.setConfig("StrictHostKeyChecking", "no")
+            session.connect(SSH_CONNECT_TIMEOUT_MS)
+            val localPort = session.setPortForwardingL(0, host, openCodePort)
+            val connection = ServerConnection.from("http://127.0.0.1:$localPort", server.username, server.password)
+            connection to session
+        }
     
     /**
      * Check server health (alias returning boolean)

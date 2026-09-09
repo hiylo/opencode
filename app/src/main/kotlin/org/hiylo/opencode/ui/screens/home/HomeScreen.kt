@@ -138,6 +138,7 @@ fun HomeScreen(
     addServerRequest: Int = 0,
     onNavigateToSessions: (serverUrl: String, username: String, password: String, serverName: String, serverId: String) -> Unit = { _, _, _, _, _ -> },
     onNavigateToCrossServerSessions: () -> Unit = {},
+    onNavigateToGlobalSearch: () -> Unit = {},
     onNavigateToServerSettings: (serverUrl: String, username: String, password: String, serverName: String, serverId: String) -> Unit = { _, _, _, _, _ -> },
     onNavigateToServerManagement: (serverUrl: String, username: String, password: String, serverName: String, serverId: String) -> Unit = { _, _, _, _, _ -> },
     onNavigateToSettings: () -> Unit = {},
@@ -201,6 +202,9 @@ fun HomeScreen(
                 actions = {
                     IconButton(onClick = { viewModel.showAddServerDialog() }) {
                         Icon(Icons.Default.Add, contentDescription = stringResource(R.string.home_add_server))
+                    }
+                    IconButton(onClick = onNavigateToGlobalSearch) {
+                        Icon(Icons.Default.Search, contentDescription = stringResource(R.string.global_search_title))
                     }
                     IconButton(onClick = onNavigateToSettings) {
                         Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.settings_title))
@@ -290,6 +294,7 @@ fun HomeScreen(
                                 isConnecting = server.id in uiState.connectingServerIds,
                                 connectionError = uiState.connectionErrors[server.id],
                                 showServerSettings = server.id in uiState.serverSettingsReadyIds,
+                                isRestartingViaSsh = server.id in uiState.restartingServerIds,
                                 onConnect = { requestNotificationPermissionAndConnect(server.id) },
                                 onDisconnect = { viewModel.disconnectFromServer(server.id) },
                                 onOpenSessions = {
@@ -320,7 +325,8 @@ fun HomeScreen(
                                     )
                                 },
                                 onEdit = { viewModel.showEditServerDialog(server) },
-                                onDelete = { viewModel.deleteServer(server.id) }
+                                onDelete = { viewModel.deleteServer(server.id) },
+                                onRestartViaSsh = { viewModel.restartServerViaSsh(server.id) }
                             )
                         }
                     }
@@ -333,8 +339,8 @@ fun HomeScreen(
             ServerDialog(
                 server = uiState.editingServer,
                 onDismiss = { viewModel.hideServerDialog() },
-                onSave = { name, url, username, password, autoConnect ->
-                    viewModel.saveServer(name, url, username, password, autoConnect)
+                onSave = { name, url, username, password, autoConnect, sshPort, sshUsername, sshPassword ->
+                    viewModel.saveServer(name, url, username, password, autoConnect, sshPort, sshUsername, sshPassword)
                 }
             )
         }
@@ -524,13 +530,15 @@ private fun ServerCard(
     isConnecting: Boolean,
     connectionError: String?,
     showServerSettings: Boolean,
+    isRestartingViaSsh: Boolean = false,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onOpenSessions: () -> Unit,
     onServerSettings: () -> Unit,
     onManageServer: () -> Unit,
     onEdit: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onRestartViaSsh: () -> Unit = {},
 ) {
     var showMenu by remember { mutableStateOf(false) }
     var showDeleteConfirmation by remember { mutableStateOf(false) }
@@ -699,23 +707,48 @@ private fun ServerCard(
                 }
             }
             if (!isConnected) {
-                AppPrimaryButton(
-                    onClick = onConnect,
+                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = !isConnecting,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    if (isConnecting) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = if (isAmoled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(stringResource(R.string.home_connecting))
-                    } else {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(stringResource(R.string.home_connect))
+                    AppPrimaryButton(
+                        onClick = onConnect,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !isConnecting,
+                    ) {
+                        if (isConnecting) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = if (isAmoled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(stringResource(R.string.home_connecting))
+                        } else {
+                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(stringResource(R.string.home_connect))
+                        }
+                    }
+                    if (connectionError != null && server.useSsh) {
+                        AppSecondaryButton(
+                            onClick = onRestartViaSsh,
+                            modifier = Modifier.fillMaxWidth(),
+                            outlined = true,
+                            enabled = !isRestartingViaSsh,
+                        ) {
+                            if (isRestartingViaSsh) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                                Spacer(Modifier.width(6.dp))
+                            } else {
+                                Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                            }
+                            Text(stringResource(R.string.home_ssh_restart), maxLines = 1)
+                        }
                     }
                 }
             }

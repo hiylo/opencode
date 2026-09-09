@@ -154,6 +154,9 @@ dependencies {
     // DataStore for preferences
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
+    // SSH (JSch) for optional SSH tunnel / remote restart
+    implementation("com.github.mwiede:jsch:0.2.20")
+
     // Periodic settings synchronization
     implementation("androidx.work:work-runtime-ktx:2.9.1")
 

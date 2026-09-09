@@ -43,6 +43,8 @@ import org.hiylo.opencode.domain.model.Part
 import org.hiylo.opencode.domain.model.ServerConfig
 import org.hiylo.opencode.domain.model.Session
 import org.hiylo.opencode.domain.model.SseEvent
+import com.jcraft.jsch.JSch
+import com.jcraft.jsch.Session as JschSession
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -73,6 +75,7 @@ private const val MAX_RECONCILED_MESSAGE_SESSIONS = 20
 internal const val FAILED_CONNECTION_TIMEOUT_MS = 15 * 60 * 1000L
 private const val DISCONNECTED_SERVERS_PREFS = "explicitly_disconnected_servers"
 private const val DISCONNECTED_SERVERS_KEY = "disconnected_server_ids"
+private const val SSH_CONNECT_TIMEOUT_MS = 15_000
 
 internal fun hasFailedConnectionTimedOut(failureStartedAt: Long, now: Long): Boolean {
     return now - failureStartedAt >= FAILED_CONNECTION_TIMEOUT_MS
@@ -96,6 +99,15 @@ internal fun sessionsNeedingMessageReconciliation(
     .take(limit)
     .toList()
 
+/** 服务器连接的运行状态。 */
+enum class ServerConnectionStatus { DISCONNECTED, CONNECTED, RECONNECTING, FAILED }
+
+/** 服务器连接的实时指标（延迟与上次心跳）。 */
+data class ServerConnectionMetrics(
+    val latencyMs: Long? = null,
+    val lastHeartbeatAt: Long? = null,
+)
+
 /**
  * Per-server connection state held by the service.
  */
@@ -103,7 +115,8 @@ private data class ServerConnectionState(
     val config: ServerConfig,
     val conn: ServerConnection,
     val sseJob: Job,
-    val isConnected: Boolean = false
+    val isConnected: Boolean = false,
+    val sshSession: JschSession? = null,
 )
 
 /**
@@ -238,6 +251,13 @@ class OpenCodeConnectionService : Service() {
     private val _connectionErrors = MutableStateFlow<Map<String, String>>(emptyMap())
     val connectionErrors: StateFlow<Map<String, String>> = _connectionErrors.asStateFlow()
 
+    /** Per-server connection metrics (latency, last heartbeat) surfaced to the UI. */
+    private val _serverMetrics = MutableStateFlow<Map<String, ServerConnectionMetrics>>(emptyMap())
+    val serverMetrics: StateFlow<Map<String, ServerConnectionMetrics>> = _serverMetrics.asStateFlow()
+
+    /** Tracks when each server's latest connect attempt started (monotonic clock) to measure latency. */
+    private val connectStartedAt = ConcurrentHashMap<String, Long>()
+
     /** Dedup response-ready notifications per session by last assistant message ID. */
     private val lastNotifiedAssistantMessageBySession = ConcurrentHashMap<String, String>()
 
@@ -318,15 +338,18 @@ class OpenCodeConnectionService : Service() {
         val serverId = intent?.getStringExtra("server_id")
         val serverUrl = intent?.getStringExtra("server_url")
         if (serverId != null && serverUrl != null) {
-            connect(
-                ServerConfig(
-                    id = serverId,
-                    url = serverUrl,
-                    username = intent.getStringExtra("server_username") ?: "opencode",
-                    password = intent.getStringExtra("server_password"),
-                    name = intent.getStringExtra("server_name"),
-                )
+            val config = ServerConfig(
+                id = serverId,
+                url = serverUrl,
+                username = intent.getStringExtra("server_username") ?: "opencode",
+                password = intent.getStringExtra("server_password"),
+                name = intent.getStringExtra("server_name"),
+                sshPort = intent.getIntExtra("server_ssh_port", 22),
+                sshUsername = intent.getStringExtra("server_ssh_username") ?: "",
+                sshPassword = intent.getStringExtra("server_ssh_password"),
             )
+            // SSH tunnel establishment is blocking; run off the main thread.
+            serviceScope.launch { connect(config) }
             return START_NOT_STICKY
         }
 
@@ -390,15 +413,23 @@ class OpenCodeConnectionService : Service() {
         }
         var replacement: ServerConnectionState? = null
         var replaced: ServerConnectionState? = null
+        val resolved = try {
+            resolveConnection(server)
+        } catch (e: Exception) {
+            Log.e(TAG, "[${server.displayName}] Failed to resolve connection", e)
+            _connectionErrors.update { it + (server.id to (e.message ?: getString(R.string.home_server_not_responding))) }
+            return
+        }
         connections.compute(server.id) { _, existing ->
             if (existing != null && !existing.sseJob.isCompleted) return@compute existing
             replaced = existing
-            val conn = ServerConnection.from(server.url, server.username, server.password)
+            val conn = ServerConnection.from(resolved.baseUrl, server.username, server.password)
             ServerConnectionState(
                 config = server,
                 conn = conn,
                 sseJob = startSseConnection(server, conn),
                 isConnected = false,
+                sshSession = resolved.sshSession,
             ).also { replacement = it }
         }
         val state = replacement
@@ -407,6 +438,7 @@ class OpenCodeConnectionService : Service() {
             return
         }
         replaced?.sseJob?.cancel()
+        closeSshSession(replaced?.sshSession)
 
         if (BuildConfig.DEBUG) Log.d(TAG, "Connecting to configured server")
 
@@ -414,6 +446,8 @@ class OpenCodeConnectionService : Service() {
         acquireWakeLock()
         _connectingServerIds.update { it + server.id }
         _connectionErrors.update { it - server.id }
+        connectStartedAt[server.id] = SystemClock.elapsedRealtime()
+        _serverMetrics.update { it - server.id }
         updatePersistentNotification()
         state.sseJob.start()
     }
@@ -429,11 +463,13 @@ class OpenCodeConnectionService : Service() {
         persistDisconnectedServers()
         val state = connections.remove(serverId) ?: return
         state.sseJob.cancel()
+        closeSshSession(state.sshSession)
         reconciliationJobs.remove(serverId)?.cancel()
 
         _connectedServerIds.update { it - serverId }
         _connectingServerIds.update { it - serverId }
         _connectionErrors.update { it - serverId }
+        clearServerMetrics(serverId)
 
         eventReducer.clearForServer(serverId)
 
@@ -480,6 +516,7 @@ class OpenCodeConnectionService : Service() {
 
         for ((_, state) in connections) {
             state.sseJob.cancel()
+            closeSshSession(state.sshSession)
         }
         reconciliationJobs.values.forEach { it.cancel() }
         reconciliationJobs.clear()
@@ -494,6 +531,8 @@ class OpenCodeConnectionService : Service() {
 
         _connectedServerIds.value = emptySet()
         _connectingServerIds.value = emptySet()
+        _serverMetrics.value = emptyMap()
+        connectStartedAt.clear()
 
         for (serverId in serverIds) {
             eventReducer.clearForServer(serverId)
@@ -551,6 +590,42 @@ class OpenCodeConnectionService : Service() {
         return connections[serverId]?.sseJob?.isActive == true
     }
 
+    /**
+     * 连接所用的 baseUrl 与可选 SSH 会话（本地端口转发建立后返回 127.0.0.1:localPort）。
+     */
+    private data class ResolvedConnection(
+        val baseUrl: String,
+        val sshSession: JschSession?,
+    )
+
+    /**
+     * 解析连接 baseUrl：未配置 SSH 时直连 [ServerConfig.url]；配置了 SSH 时通过
+     * JSch 建立 `host:sshPort` 的会话并做本地端口转发，返回 127.0.0.1:localPort。
+     */
+    private fun resolveConnection(server: ServerConfig): ResolvedConnection {
+        if (!server.useSsh) return ResolvedConnection(server.url, null)
+        val host = server.host
+        val openCodePort = server.openCodePort
+        return try {
+            val jsch = JSch()
+            val session = jsch.getSession(server.sshUsername, host, server.sshPort)
+            session.setPassword(server.sshPassword ?: "")
+            session.setConfig("StrictHostKeyChecking", "no")
+            session.connect(SSH_CONNECT_TIMEOUT_MS)
+            val localPort = session.setPortForwardingL(0, host, openCodePort)
+            Log.i(TAG, "[${server.displayName}] SSH tunnel established: 127.0.0.1:$localPort -> $host:$openCodePort")
+            ResolvedConnection("http://127.0.0.1:$localPort", session)
+        } catch (e: Exception) {
+            Log.e(TAG, "[${server.displayName}] Failed to establish SSH tunnel", e)
+            throw e
+        }
+    }
+
+    /** 静默断开 SSH 会话。 */
+    private fun closeSshSession(session: JschSession?) {
+        try { session?.disconnect() } catch (_: Exception) { }
+    }
+
     // ============ WakeLock ============
 
     @Synchronized
@@ -602,6 +677,8 @@ class OpenCodeConnectionService : Service() {
                 reconciliationJobs.remove(state.config.id)?.cancel()
                 _connectedServerIds.update { it - state.config.id }
                 _connectingServerIds.update { it + state.config.id }
+                connectStartedAt[state.config.id] = SystemClock.elapsedRealtime()
+                _serverMetrics.update { it - state.config.id }
                 job.start()
             }
             updatePersistentNotification()
@@ -641,26 +718,9 @@ class OpenCodeConnectionService : Service() {
                     preloaded = true
                     // Pre-load once. Reconciliation refreshes state after a successful reconnect.
                     try {
-                        val projects = api.listProjects(conn)
-                        if (projects.isEmpty()) {
-                            val sessions = api.listSessions(conn)
-                            eventReducer.setSessions(server.id, sessions)
-                            Log.i(TAG, "[${server.displayName}] Pre-loaded ${sessions.size} sessions (no projects)")
-                        } else {
-                            var totalSessions = 0
-                            for (project in projects) {
-                                try {
-                                    val sessions = api.listSessions(conn, directory = project.worktree)
-                                    eventReducer.setSessions(server.id, sessions)
-                                    totalSessions += sessions.size
-                                } catch (e: CancellationException) {
-                                    throw e
-                                } catch (e: Exception) {
-                                    Log.w(TAG, "[${server.displayName}] Failed to pre-load sessions for project ${project.displayName}: ${e.message}")
-                                }
-                            }
-                            Log.i(TAG, "[${server.displayName}] Pre-loaded $totalSessions sessions across ${projects.size} projects")
-                        }
+                        val sessions = api.listSessions(conn)
+                        eventReducer.setSessions(server.id, sessions)
+                        Log.i(TAG, "[${server.displayName}] Pre-loaded ${sessions.size} sessions")
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -747,81 +807,68 @@ class OpenCodeConnectionService : Service() {
     }
 
     private suspend fun reconcileServerState(server: ServerConfig, conn: ServerConnection) {
-        val directories = try {
-            api.listProjects(conn).map { it.worktree }.ifEmpty { listOf(null) }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w(TAG, "[${server.displayName}] Reconciliation project lookup failed", e)
-            return
-        }
-
         val revision = eventReducer.pendingSnapshotRevision()
         val permissions = mutableListOf<SseEvent.PermissionAsked>()
         val questions = mutableListOf<SseEvent.QuestionAsked>()
         var complete = true
-        for (directory in directories) {
-            try {
-                val localSessions = eventReducer.sessions.value.associateBy { it.id }
-                val sessions = api.listSessions(conn, directory)
-                val changedSessions = sessionsNeedingMessageReconciliation(localSessions, sessions)
-                eventReducer.setSessions(server.id, sessions)
-                changedSessions.forEach { session ->
-                    try {
-                        eventReducer.mergeMessages(
-                            session.id,
-                            api.listMessages(conn, session.id, limit = 50, directory = directory),
-                        )
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Log.w(TAG, "[${server.displayName}] Message reconciliation failed for ${session.id}", e)
-                    }
-                }
-                val statuses = api.listSessionStatuses(conn, directory)
-                val serverSessionIds = eventReducer.serverSessions.value[server.id].orEmpty()
-                val directorySessionIds = eventReducer.sessions.value
-                    .asSequence()
-                    .filter { it.id in serverSessionIds }
-                    .filter { directory == null || it.directory == directory }
-                    .map { it.id }
-                    .toSet()
-                eventReducer.replaceSessionStatuses(server.id, directorySessionIds, statuses)
-                permissions += api.listPendingPermissions(conn, directory).map { request ->
-                    SseEvent.PermissionAsked(
-                        id = request.id,
-                        sessionId = request.sessionId,
-                        permission = request.permission,
-                        patterns = request.patterns,
-                        always = request.always,
-                        metadata = request.metadata,
-                        tool = request.tool,
+        try {
+            val localSessions = eventReducer.sessions.value.associateBy { it.id }
+            val sessions = api.listSessions(conn)
+            val changedSessions = sessionsNeedingMessageReconciliation(localSessions, sessions)
+            eventReducer.setSessions(server.id, sessions)
+            changedSessions.forEach { session ->
+                try {
+                    eventReducer.mergeMessages(
+                        session.id,
+                        api.listMessages(conn, session.id, limit = 50, directory = session.directory),
                     )
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "[${server.displayName}] Message reconciliation failed for ${session.id}", e)
                 }
-                questions += api.listPendingQuestions(conn, directory).map { request ->
-                    SseEvent.QuestionAsked(
-                        id = request.id,
-                        sessionId = request.sessionId,
-                        questions = request.questions.map { question ->
-                            SseEvent.QuestionAsked.Question(
-                                header = question.header,
-                                question = question.question,
-                                multiple = question.multiple,
-                                custom = question.custom,
-                                options = question.options.map { option ->
-                                    SseEvent.QuestionAsked.Option(option.label, option.description)
-                                },
-                            )
-                        },
-                        tool = request.tool,
-                    )
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                complete = false
-                Log.w(TAG, "[${server.displayName}] Reconciliation failed for project", e)
             }
+            val statuses = api.listSessionStatuses(conn)
+            val serverSessionIds = eventReducer.serverSessions.value[server.id].orEmpty()
+            val sessionIds = eventReducer.sessions.value.asSequence()
+                .filter { it.id in serverSessionIds }
+                .map { it.id }
+                .toSet()
+            eventReducer.replaceSessionStatuses(server.id, sessionIds, statuses)
+            permissions += api.listPendingPermissions(conn).map { request ->
+                SseEvent.PermissionAsked(
+                    id = request.id,
+                    sessionId = request.sessionId,
+                    permission = request.permission,
+                    patterns = request.patterns,
+                    always = request.always,
+                    metadata = request.metadata,
+                    tool = request.tool,
+                )
+            }
+            questions += api.listPendingQuestions(conn).map { request ->
+                SseEvent.QuestionAsked(
+                    id = request.id,
+                    sessionId = request.sessionId,
+                    questions = request.questions.map { question ->
+                        SseEvent.QuestionAsked.Question(
+                            header = question.header,
+                            question = question.question,
+                            multiple = question.multiple,
+                            custom = question.custom,
+                            options = question.options.map { option ->
+                                SseEvent.QuestionAsked.Option(option.label, option.description)
+                            },
+                        )
+                    },
+                    tool = request.tool,
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            complete = false
+            Log.w(TAG, "[${server.displayName}] Reconciliation failed", e)
         }
         if (complete) {
             eventReducer.replacePendingRequests(server.id, permissions, questions, revision)
@@ -832,11 +879,13 @@ class OpenCodeConnectionService : Service() {
     private fun cleanupTerminatedConnection(serverId: String, job: Job) {
         val state = connections[serverId] ?: return
         if (state.sseJob !== job || !connections.remove(serverId, state)) return
+        closeSshSession(state.sshSession)
         reconciliationJobs.remove(serverId)?.cancel()
 
         _connectedServerIds.update { it - serverId }
         _connectingServerIds.update { it - serverId }
         eventReducer.clearTransientForServer(serverId)
+        clearServerMetrics(serverId)
 
         if (connections.isEmpty()) {
             stopServiceIfIdle()
@@ -860,11 +909,33 @@ class OpenCodeConnectionService : Service() {
         if (connected) {
             _connectingServerIds.update { it - serverId }
             _connectedServerIds.update { it + serverId }
+            val latencyMs = connectStartedAt.remove(serverId)?.let { SystemClock.elapsedRealtime() - it }
+            recordServerHeartbeat(serverId)
+            if (latencyMs != null) recordServerLatency(serverId, latencyMs)
         } else {
             _connectedServerIds.update { it - serverId }
             _connectingServerIds.update { it + serverId }
         }
         updatePersistentNotification()
+    }
+
+    private fun recordServerHeartbeat(serverId: String) {
+        _serverMetrics.update { current ->
+            val existing = current[serverId] ?: ServerConnectionMetrics()
+            current + (serverId to existing.copy(lastHeartbeatAt = System.currentTimeMillis()))
+        }
+    }
+
+    private fun recordServerLatency(serverId: String, latencyMs: Long) {
+        _serverMetrics.update { current ->
+            val existing = current[serverId] ?: ServerConnectionMetrics()
+            current + (serverId to existing.copy(latencyMs = latencyMs))
+        }
+    }
+
+    private fun clearServerMetrics(serverId: String) {
+        _serverMetrics.update { it - serverId }
+        connectStartedAt.remove(serverId)
     }
 
     private fun calculateBackoff(attempt: Int): Long {
@@ -894,6 +965,7 @@ class OpenCodeConnectionService : Service() {
 
     private fun processEvent(server: ServerConfig, event: SseEvent, directory: String?, workspaceId: String?) {
         eventReducer.processEvent(event, server.id, directory, workspaceId)
+        recordServerHeartbeat(server.id)
 
         when (event) {
             is SseEvent.SessionIdle -> {

@@ -33,56 +33,24 @@ import org.hiylo.opencode.ui.components.AppDialog
 import org.hiylo.opencode.ui.components.AppDialogActions
 
 /**
- * Parse and validate a server URL string.
- * Accepts formats like:
- *   http://192.168.0.10:4096
- *   https://192.168.0.10
- *   https://my-server.example.com:4848
- *   192.168.0.10:4096           -> defaults to http://
- *   192.168.0.10                -> defaults to http://
- *
- * Returns the normalized URL (with scheme) or null if invalid.
+ * 从规范化 url 解析出主机与显式端口（无显式端口返回 null）。
  */
-private fun validateAndNormalizeUrl(input: String): String? {
-    val trimmed = input.trim()
-    if (trimmed.isBlank()) return null
-
-    // Add scheme if missing
-    val withScheme = if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
-        "http://$trimmed"
-    } else {
-        trimmed
-    }
-
+private fun parseHostAndPort(url: String?): Pair<String, Int?> {
+    if (url.isNullOrBlank()) return "" to null
     return try {
-        val url = java.net.URL(withScheme)
-        // Must have a host
-        if (url.host.isNullOrBlank()) return null
-        // Port must be valid if specified
-        if (url.port != -1 && url.port !in 1..65535) return null
-        // Rebuild a clean URL (scheme + host + optional port)
-        val port = url.port
-        if (port != -1) {
-            "${url.protocol}://${url.host}:$port"
-        } else {
-            "${url.protocol}://${url.host}"
-        }
-    } catch (e: Exception) {
-        null
+        val parsed = java.net.URL(url)
+        parsed.host to (parsed.port.takeIf { it != -1 })
+    } catch (_: Exception) {
+        val body = url.substringAfter("://", url)
+        val host = body.substringBefore("/").substringBefore(":")
+        host to body.substringAfterLast(":").toIntOrNull()
     }
 }
 
-private fun deriveServerNameFromUrl(normalizedUrl: String): String {
-    return try {
-        val url = java.net.URL(normalizedUrl)
-        val host = url.host
-        val port = url.port
-        if (port != -1) "$host:$port" else host
-    } catch (_: Exception) {
-        normalizedUrl
-            .removePrefix("http://")
-            .removePrefix("https://")
-    }
+/** 由主机与端口推导默认服务器名。 */
+private fun deriveServerNameFromHost(host: String, port: Int?): String {
+    val cleanHost = host.trim()
+    return if (port != null) "$cleanHost:$port" else cleanHost
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -90,18 +58,23 @@ private fun deriveServerNameFromUrl(normalizedUrl: String): String {
 fun ServerDialog(
     server: ServerConfig?,
     onDismiss: () -> Unit,
-    onSave: (name: String, url: String, username: String, password: String, autoConnect: Boolean) -> Unit
+    onSave: (name: String, url: String, username: String, password: String, autoConnect: Boolean, sshPort: Int, sshUsername: String, sshPassword: String?) -> Unit
 ) {
-    var name by remember { mutableStateOf(server?.name ?: "") }
-    var url by remember { mutableStateOf(server?.url ?: "http://") }
-    var username by remember { mutableStateOf(server?.username ?: "opencode") }
-    var password by remember { mutableStateOf(server?.password ?: "") }
-    var autoConnect by remember { mutableStateOf(server?.autoConnect ?: false) }
+    val (initialHost, initialPort) = parseHostAndPort(server?.url)
+    var name by remember(server) { mutableStateOf(server?.name ?: "") }
+    var host by remember(server) { mutableStateOf(initialHost) }
+    var openCodePort by remember(server) { mutableStateOf(initialPort?.toString() ?: "") }
+    var useHttps by remember(server) { mutableStateOf(server?.url?.startsWith("https://") == true) }
+    var username by remember(server) { mutableStateOf(server?.username ?: "opencode") }
+    var password by remember(server) { mutableStateOf(server?.password ?: "") }
+    var autoConnect by remember(server) { mutableStateOf(server?.autoConnect ?: false) }
+    var sshPortText by remember(server) { mutableStateOf((server?.sshPort ?: 22).toString()) }
+    var sshUsername by remember(server) { mutableStateOf(server?.sshUsername ?: "") }
+    var sshPassword by remember(server) { mutableStateOf(server?.sshPassword ?: "") }
 
-    var urlError by remember { mutableStateOf<String?>(null) }
+    var hostError by remember { mutableStateOf<String?>(null) }
+    val hostInvalidText = stringResource(R.string.server_invalid_host)
 
-    val urlRequiredText = stringResource(R.string.server_url)
-    val urlInvalidText = stringResource(R.string.server_invalid_url)
     val dialogMaxHeight = LocalConfiguration.current.screenHeightDp.dp * 0.9f
     val scrollState = rememberScrollState()
 
@@ -123,131 +96,211 @@ fun ServerDialog(
         onDismissRequest = onDismiss,
         modifier = Modifier.fillMaxWidth().heightIn(max = dialogMaxHeight),
     ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
             Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(24.dp),
+                    .weight(1f, fill = false)
+                    .verticalScroll(scrollState),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Column(
-                    modifier = Modifier
-                        .weight(1f, fill = false)
-                        .verticalScroll(scrollState),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                Text(
+                    text = if (server != null) stringResource(R.string.home_edit) else stringResource(R.string.server_add),
+                    style = MaterialTheme.typography.titleMedium
+                )
+
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text(stringResource(R.string.server_name)) },
+                    placeholder = { Text(stringResource(R.string.server_name_hint)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = host,
+                    onValueChange = {
+                        host = it
+                        hostError = null
+                    },
+                    label = { Text(stringResource(R.string.server_host)) },
+                    placeholder = { Text(stringResource(R.string.server_host_hint)) },
+                    isError = hostError != null,
+                    supportingText = if (hostError != null) {
+                        { Text(hostError!!) }
+                    } else {
+                        { Text(stringResource(R.string.server_host_hint)) }
+                    },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = openCodePort,
+                    onValueChange = { openCodePort = it },
+                    label = { Text(stringResource(R.string.server_opencode_port)) },
+                    placeholder = { Text(stringResource(R.string.server_opencode_port_hint)) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(
-                        text = if (server != null) stringResource(R.string.home_edit) else stringResource(R.string.server_add),
-                        style = MaterialTheme.typography.titleMedium
-                    )
-
-                    OutlinedTextField(
-                        value = name,
-                        onValueChange = { name = it },
-                        label = { Text(stringResource(R.string.server_name)) },
-                        placeholder = { Text(stringResource(R.string.server_name_hint)) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    OutlinedTextField(
-                        value = url,
-                        onValueChange = {
-                            url = it
-                            urlError = null
-                        },
-                        label = { Text(stringResource(R.string.server_url)) },
-                        placeholder = { Text(stringResource(R.string.server_url_hint)) },
-                        isError = urlError != null,
-                        supportingText = if (urlError != null) {
-                            { Text(urlError!!) }
-                        } else {
-                            { Text(stringResource(R.string.server_url_example)) }
-                        },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    OutlinedTextField(
-                        value = username,
-                        onValueChange = { username = it },
-                        label = { Text(stringResource(R.string.server_username)) },
-                        placeholder = { Text(stringResource(R.string.server_username_hint)) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    OutlinedTextField(
-                        value = password,
-                        onValueChange = { password = it },
-                        label = { Text(stringResource(R.string.server_password)) },
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
-                        modifier = Modifier.fillMaxWidth()
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 12.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = stringResource(R.string.server_auto_connect),
-                                    style = MaterialTheme.typography.titleSmall
-                                )
-                                Text(
-                                    text = stringResource(R.string.server_auto_connect_desc),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            Switch(
-                                checked = autoConnect,
-                                onCheckedChange = { autoConnect = it },
-                                colors = switchColors
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.server_https),
+                                style = MaterialTheme.typography.titleSmall
                             )
                         }
+                        Switch(
+                            checked = useHttps,
+                            onCheckedChange = { useHttps = it },
+                            colors = switchColors
+                        )
                     }
                 }
 
-                AppDialogActions(
-                    dismissText = stringResource(R.string.server_cancel),
-                    confirmText = stringResource(R.string.server_save),
-                    onDismiss = onDismiss,
-                    onConfirm = {
-                        val normalizedUrl = validateAndNormalizeUrl(url)
-                        urlError = when {
-                            url.isBlank() -> urlRequiredText
-                            normalizedUrl == null -> urlInvalidText
-                            else -> null
-                        }
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = { username = it },
+                    label = { Text(stringResource(R.string.server_username)) },
+                    placeholder = { Text(stringResource(R.string.server_username_hint)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
 
-                        if (urlError == null && normalizedUrl != null) {
-                            val finalName = name.trim().ifBlank {
-                                deriveServerNameFromUrl(normalizedUrl)
-                            }
-                            onSave(
-                                finalName,
-                                normalizedUrl,
-                                username.ifBlank { "opencode" },
-                                password,
-                                autoConnect,
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text(stringResource(R.string.server_password)) },
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.server_auto_connect),
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Text(
+                                text = stringResource(R.string.server_auto_connect_desc),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
-                    },
+                        Switch(
+                            checked = autoConnect,
+                            onCheckedChange = { autoConnect = it },
+                            colors = switchColors
+                        )
+                    }
+                }
+
+                // SSH（可选）
+                Text(
+                    text = stringResource(R.string.server_ssh_section),
+                    style = MaterialTheme.typography.titleSmall
+                )
+                Text(
+                    text = stringResource(R.string.server_ssh_section_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                OutlinedTextField(
+                    value = sshPortText,
+                    onValueChange = { sshPortText = it },
+                    label = { Text(stringResource(R.string.server_ssh_port)) },
+                    placeholder = { Text("22") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = sshUsername,
+                    onValueChange = { sshUsername = it },
+                    label = { Text(stringResource(R.string.server_ssh_username)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = sshPassword,
+                    onValueChange = { sshPassword = it },
+                    label = { Text(stringResource(R.string.server_ssh_password)) },
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
+
+            AppDialogActions(
+                dismissText = stringResource(R.string.server_cancel),
+                confirmText = stringResource(R.string.server_save),
+                onDismiss = onDismiss,
+                onConfirm = {
+                    val trimmedHost = host.trim()
+                    hostError = when {
+                        trimmedHost.isBlank() -> hostInvalidText
+                        else -> null
+                    }
+
+                    if (hostError == null) {
+                        val openCodePortValue = openCodePort.trim().toIntOrNull() ?: 4096
+                        val scheme = if (useHttps) "https" else "http"
+                        val normalizedUrl = "$scheme://$trimmedHost:$openCodePortValue"
+                        val finalName = name.trim().ifBlank {
+                            deriveServerNameFromHost(trimmedHost, openCodePortValue)
+                        }
+                        val sshPortValue = sshPortText.trim().toIntOrNull() ?: 22
+                        onSave(
+                            finalName,
+                            normalizedUrl,
+                            username.ifBlank { "opencode" },
+                            password,
+                            autoConnect,
+                            sshPortValue,
+                            sshUsername.trim(),
+                            sshPassword.ifBlank { null },
+                        )
+                    }
+                },
+            )
+        }
     }
 }

@@ -10,21 +10,37 @@
 package org.hiylo.opencode.ui.screens.server
 
 import org.hiylo.opencode.logging.AppLogger as Log
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.os.IBinder
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import org.hiylo.opencode.data.api.OpenCodeApi
 import org.hiylo.opencode.data.api.ServerConfigPatch
 import org.hiylo.opencode.data.api.ServerConfigResponse
 import org.hiylo.opencode.data.api.ServerConnection
+import org.hiylo.opencode.data.repository.ServerRepository
 import org.hiylo.opencode.data.shell.ServerShellRegistry
+import org.hiylo.opencode.domain.model.ServerConfig
 import org.hiylo.opencode.domain.model.SessionStatus
+import org.hiylo.opencode.service.OpenCodeConnectionService
+import org.hiylo.opencode.service.ServerConnectionMetrics
+import org.hiylo.opencode.service.ServerConnectionStatus
+import org.hiylo.opencode.service.SshRunner
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 private const val TAG = "ServerManagementViewModel"
@@ -39,11 +55,19 @@ data class ServerManagementUiState(
     val disk: String? = null,
     val loadAverage: String? = null,
     val config: ServerConfigResponse = ServerConfigResponse(),
+    val connectionHealth: ServerConnectionHealthUi? = null,
     val isLoading: Boolean = true,
     val isRestarting: Boolean = false,
     val isSavingConfig: Boolean = false,
     val error: String? = null,
     val message: String? = null,
+)
+
+/** 单个服务器连接的实时健康状态。 */
+data class ServerConnectionHealthUi(
+    val status: ServerConnectionStatus = ServerConnectionStatus.DISCONNECTED,
+    val latencyMs: Long? = null,
+    val lastHeartbeatAt: Long? = null,
 )
 
 /**
@@ -57,6 +81,8 @@ class ServerManagementViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val api: OpenCodeApi,
     private val shellRegistry: ServerShellRegistry,
+    private val serverRepository: ServerRepository,
+    @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
     private val serverUrl: String = savedStateHandle.get<String>("serverUrl").orEmpty()
@@ -78,15 +104,79 @@ class ServerManagementViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(ServerManagementUiState(serverName = serverName, isLoading = true))
     val uiState: StateFlow<ServerManagementUiState> = _uiState.asStateFlow()
 
+    private var serviceBinder: OpenCodeConnectionService.LocalBinder? = null
+    private var healthObserverJob: Job? = null
+
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            serviceBinder = service as? OpenCodeConnectionService.LocalBinder
+            observeConnectionHealth()
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            serviceBinder = null
+            healthObserverJob?.cancel()
+            healthObserverJob = null
+            _uiState.update { it.copy(connectionHealth = null) }
+        }
+    }
+
     init {
         refresh()
+        bindToService()
     }
 
     override fun onCleared() {
+        healthObserverJob?.cancel()
+        try {
+            context.unbindService(serviceConnection)
+        } catch (_: Exception) {
+            // 服务可能未绑定
+        }
         if (shellAcquired) {
             shellRegistry.release(serverId.ifBlank { conn.baseUrl })
         }
         super.onCleared()
+    }
+
+    private fun bindToService() {
+        val intent = Intent(context, OpenCodeConnectionService::class.java)
+        context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+    }
+
+    /** 订阅服务的连接状态与实时指标，计算当前服务器的健康状态。 */
+    private fun observeConnectionHealth() {
+        val service = serviceBinder?.getService() ?: return
+        healthObserverJob?.cancel()
+        healthObserverJob = viewModelScope.launch {
+            combine(
+                service.connectedServerIds,
+                service.connectingServerIds,
+                service.connectionErrors,
+                service.serverMetrics,
+            ) { connected, connecting, errors, metrics ->
+                resolveConnectionHealth(connected, connecting, errors, metrics)
+            }.collect { health ->
+                _uiState.update { it.copy(connectionHealth = health) }
+            }
+        }
+    }
+
+    private fun resolveConnectionHealth(
+        connected: Set<String>,
+        connecting: Set<String>,
+        errors: Map<String, String>,
+        metrics: Map<String, ServerConnectionMetrics>,
+    ): ServerConnectionHealthUi {
+        if (serverId.isBlank()) return ServerConnectionHealthUi()
+        val status = when {
+            errors.containsKey(serverId) -> ServerConnectionStatus.FAILED
+            serverId in connected -> ServerConnectionStatus.CONNECTED
+            serverId in connecting -> ServerConnectionStatus.RECONNECTING
+            else -> ServerConnectionStatus.DISCONNECTED
+        }
+        val metric = metrics[serverId]
+        return ServerConnectionHealthUi(status, metric?.latencyMs, metric?.lastHeartbeatAt)
     }
 
     /** 重新加载服务信息、活跃会话数与服务器资源。 */
@@ -170,16 +260,21 @@ class ServerManagementViewModel @Inject constructor(
         }
     }
 
-    /** 通过共享 PTY 执行重启命令（需在 UI 层二次确认后调用）。 */
+    /** 重启 opencode 服务：配置了 SSH 时走 SSH，否则走共享 PTY。 */
     fun restartServer() {
         viewModelScope.launch {
             _uiState.update { it.copy(isRestarting = true, error = null, message = null) }
             try {
-                val result = shell.runCommandResult(RESTART_COMMAND, timeoutMs = 30_000)
+                val server = serverRepository.getServer(serverId)
+                val output = if (server?.useSsh == true) {
+                    SshRunner.runCommand(server, RESTART_COMMAND)
+                } else {
+                    shell.runCommandResult(RESTART_COMMAND, timeoutMs = 30_000).output
+                }
                 _uiState.update {
                     it.copy(
                         isRestarting = false,
-                        message = result.output.ifBlank { null },
+                        message = output.ifBlank { null },
                     )
                 }
             } catch (e: Exception) {

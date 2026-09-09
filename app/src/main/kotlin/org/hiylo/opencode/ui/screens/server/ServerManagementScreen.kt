@@ -58,6 +58,10 @@ import org.hiylo.opencode.ui.components.AppPrimaryButton
 import org.hiylo.opencode.ui.components.AppSecondaryButton
 import org.hiylo.opencode.ui.components.appAmoledBorder
 import org.hiylo.opencode.ui.components.isAmoledTheme
+import org.hiylo.opencode.service.ServerConnectionStatus
+import org.hiylo.opencode.ui.theme.StatusConnected
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.delay
 
 /**
  * 服务器管理页：展示服务/服务器信息、查看与修改服务配置，并支持重启服务。
@@ -127,6 +131,9 @@ fun ServerManagementScreen(
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
+
+            // 连接健康度
+            ConnectionHealthSection(isAmoled = isAmoled, health = uiState.connectionHealth)
 
             // 服务基本信息
             SectionCard(isAmoled = isAmoled) {
@@ -286,7 +293,7 @@ private fun SectionHeader(title: String) {
 }
 
 @Composable
-private fun InfoRow(label: String, value: String) {
+private fun InfoRow(label: String, value: String, valueColor: Color? = null) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -301,6 +308,47 @@ private fun InfoRow(label: String, value: String) {
             text = value,
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Medium,
+            color = valueColor ?: Color.Unspecified,
+        )
+    }
+}
+
+@Composable
+private fun ConnectionHealthSection(
+    isAmoled: Boolean,
+    health: ServerConnectionHealthUi?,
+) {
+    val nowMillis by produceState(initialValue = System.currentTimeMillis()) {
+        while (true) {
+            delay(1_000)
+            value = System.currentTimeMillis()
+        }
+    }
+    SectionCard(isAmoled = isAmoled) {
+        SectionHeader(stringResource(R.string.server_health_title))
+        val status = health?.status ?: ServerConnectionStatus.DISCONNECTED
+        val (statusText, statusColor) = when (status) {
+            ServerConnectionStatus.CONNECTED -> stringResource(R.string.server_health_connected) to StatusConnected
+            ServerConnectionStatus.RECONNECTING -> stringResource(R.string.server_health_reconnecting) to MaterialTheme.colorScheme.tertiary
+            ServerConnectionStatus.FAILED -> stringResource(R.string.server_health_failed) to MaterialTheme.colorScheme.error
+            ServerConnectionStatus.DISCONNECTED -> stringResource(R.string.server_health_disconnected) to MaterialTheme.colorScheme.onSurfaceVariant
+        }
+        InfoRow(
+            label = stringResource(R.string.server_health_status),
+            value = statusText,
+            valueColor = statusColor,
+        )
+        InfoRow(
+            label = stringResource(R.string.server_health_latency),
+            value = health?.latencyMs?.let { stringResource(R.string.server_health_latency_value, it) }
+                ?: stringResource(R.string.server_mgmt_unknown),
+        )
+        InfoRow(
+            label = stringResource(R.string.server_health_last_heartbeat),
+            value = health?.lastHeartbeatAt?.let { last ->
+                val seconds = ((nowMillis - last) / 1_000).coerceAtLeast(0)
+                stringResource(R.string.server_health_heartbeat_ago, seconds)
+            } ?: stringResource(R.string.server_health_heartbeat_never),
         )
     }
 }

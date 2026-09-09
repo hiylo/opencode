@@ -35,6 +35,8 @@ import org.hiylo.opencode.data.update.UpdateState
 import org.hiylo.opencode.data.update.AvailableUpdate
 import org.hiylo.opencode.domain.model.ServerConfig
 import org.hiylo.opencode.service.OpenCodeConnectionService
+import org.hiylo.opencode.service.SshRunner
+import android.widget.Toast
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -52,12 +54,15 @@ import javax.inject.Inject
 
 private const val TAG = "HomeViewModel"
 
+private const val RESTART_OPENCODE_COMMAND = "systemctl restart opencode"
+
 data class HomeUiState(
     val servers: List<ServerConfig> = emptyList(),
     val connectedServerIds: Set<String> = emptySet(),
     val serverSettingsReadyIds: Set<String> = emptySet(),
     val connectingServerIds: Set<String> = emptySet(),
     val connectionErrors: Map<String, String> = emptyMap(),
+    val restartingServerIds: Set<String> = emptySet(),
     val showAddServerDialog: Boolean = false,
     val editingServer: ServerConfig? = null,
     val isLoading: Boolean = true,
@@ -274,7 +279,10 @@ class HomeViewModel @Inject constructor(
         url: String,
         username: String,
         password: String,
-        autoConnect: Boolean
+        autoConnect: Boolean,
+        sshPort: Int,
+        sshUsername: String,
+        sshPassword: String?,
     ) {
         viewModelScope.launch {
             val editingServer = _uiState.value.editingServer
@@ -285,7 +293,10 @@ class HomeViewModel @Inject constructor(
                     url = url,
                     username = username,
                     password = password,
-                    autoConnect = autoConnect
+                    autoConnect = autoConnect,
+                    sshPort = sshPort,
+                    sshUsername = sshUsername,
+                    sshPassword = sshPassword,
                 )
                 serverRepository.updateServer(updatedServer)
             } else {
@@ -294,7 +305,10 @@ class HomeViewModel @Inject constructor(
                     username = username,
                     password = password,
                     name = name,
-                    autoConnect = autoConnect
+                    autoConnect = autoConnect,
+                    sshPort = sshPort,
+                    sshUsername = sshUsername,
+                    sshPassword = sshPassword,
                 )
             }
             
@@ -364,6 +378,9 @@ class HomeViewModel @Inject constructor(
                     putExtra("server_url", server.url)
                     putExtra("server_username", server.username)
                     putExtra("server_password", server.password)
+                    putExtra("server_ssh_port", server.sshPort)
+                    putExtra("server_ssh_username", server.sshUsername)
+                    putExtra("server_ssh_password", server.sshPassword)
                 }
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -433,6 +450,45 @@ class HomeViewModel @Inject constructor(
             getApplication<Application>().unbindService(serviceConnection)
         } catch (e: Exception) {
             // Service might not be bound
+        }
+    }
+
+    /**
+     * 通过 SSH 远程重启 opencode 系统服务（用于 OpenCode 后端崩溃后仍能恢复服务）。
+     *
+     * 独立于 OpenCode 的 HTTP 连接，仅依赖配置的 SSH 凭据。
+     */
+    fun restartServerViaSsh(serverId: String) {
+        if (serverId in _uiState.value.restartingServerIds) return
+        viewModelScope.launch {
+            val server = serverRepository.getServer(serverId) ?: return@launch
+            _uiState.update { it.copy(restartingServerIds = it.restartingServerIds + serverId) }
+            try {
+                SshRunner.runCommand(server, RESTART_OPENCODE_COMMAND)
+                _uiState.update {
+                    it.copy(
+                        restartingServerIds = it.restartingServerIds - serverId,
+                        connectionErrors = it.connectionErrors - serverId,
+                    )
+                }
+                Toast.makeText(
+                    getApplication(),
+                    getApplication<Application>().getString(R.string.home_ssh_restart_success),
+                    Toast.LENGTH_SHORT,
+                ).show()
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        restartingServerIds = it.restartingServerIds - serverId,
+                        connectionErrors = it.connectionErrors + (serverId to (e.message ?: "SSH restart failed")),
+                    )
+                }
+                Toast.makeText(
+                    getApplication(),
+                    getApplication<Application>().getString(R.string.home_ssh_restart_failed),
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
         }
     }
 }
