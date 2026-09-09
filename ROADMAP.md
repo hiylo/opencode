@@ -54,53 +54,53 @@ Copyright(c) 2016 - Present, Clouds Studio Holding Limited. All rights reserved.
 ## Now — 1.2.0
 
 > Everything below is a **pure client** change — the opencode server is untouched.
-> Exceptions: voice input (relies on ASR capability) and image understanding (relies on the model
-> supporting vision); neither involves server-side code.
+> Exceptions: voice input (relies on an on-device ASR model) and image understanding (relies on the
+> model supporting vision); neither involves server-side code.
 
 ### Sessions & project management
 
-- [ ] Session search / filter (by title, directory, time)
-- [ ] Batch archive / delete
-- [ ] Session pinning with drag-to-reorder
-- [ ] Collapsible project groups, quick entry for recent projects
+- [x] Session search / filter (by title, directory, time)
+- [x] Batch archive / delete
+- [x] Session pinning with drag-to-reorder
+- [x] Collapsible project groups, quick entry for recent projects
 
 ### Chat experience
 
-- [ ] Edit & resend after editing a message
-- [ ] Message quoting / reply (@ a message)
-- [ ] Long-press message menu: copy / re-edit & resend / quote & reply
-- [ ] Markdown table rendering
-- [ ] One-tap code-block copy + language label + long-code collapse
-- [ ] Streaming typewriter optimization, resume on reconnect
-- [ ] Send feedback: vibration / sound after sending, typing-cursor animation while generating
-- [ ] Timestamp grouping: message dividers by time (today / yesterday / earlier)
-- [ ] Scroll-to-bottom button polish: unread-new-message red dot
-- [ ] Empty state: new-session onboarding placeholder (quick commands / suggestions)
-- [ ] Voice input (ASR: uses Android's built-in `SpeechRecognizer`, free / offline / no third-party
-  network service)
-- [ ] Image understanding (multimodal: depends on whether the selected model supports vision; the
+- [x] Edit & resend after editing a message
+- [x] Message quoting / reply (@ a message)
+- [x] Long-press message menu: copy / re-edit & resend / quote & reply
+- [x] Markdown table rendering
+- [x] One-tap code-block copy + language label + long-code collapse
+- [x] Streaming typewriter optimization, resume on reconnect
+- [x] Send feedback: vibration / sound after sending, typing-cursor animation while generating
+- [x] Timestamp grouping: message dividers by time (today / yesterday / earlier)
+- [x] Scroll-to-bottom button polish: unread-new-message red dot
+- [x] Empty state: new-session onboarding placeholder (quick commands / suggestions)
+- [x] Voice input (ASR: on-device MNN sherpa-mnn streaming Zipformer, downloaded from ModelScope —
+  free / offline / no third-party network service; hold-to-talk)
+- [x] Image understanding (multimodal: depends on whether the selected model supports vision; the
   image entry is enabled only for vision-capable models, otherwise show "model does not support
   vision")
 
 ### Agents / tools
 
-- [ ] Permission-request cards + "always allow"
-- [ ] Todo list with live progress bars
-- [ ] Sub-agent tree / timeline view
-- [ ] Custom Slash command quick panel
+- [x] Permission-request cards + "always allow"
+- [x] Todo list with live progress bars
+- [x] Sub-agent tree / timeline view
+- [x] Custom Slash command quick panel
 
 ### Servers & connectivity
 
-- [ ] Multiple servers online simultaneously, one-tap switching
-- [ ] SSH tunnel direct connection, connection health monitoring
-- [ ] Message pagination / history-loading optimization (load-older already exists)
+- [x] Multiple servers online simultaneously, one-tap switching
+- [x] SSH tunnel direct connection, connection health monitoring
+- [x] Message pagination / history-loading optimization (load-older already exists)
 
 ### Localization & experience
 
-- [ ] Independent Dark / AMOLED theme toggles, follow-system
-- [ ] Finer-grained font size / line height
-- [ ] Global search: title / directory / time (across sessions and projects)
-- [ ] Session export (Markdown / JSON)
+- [x] Independent Dark / AMOLED theme toggles, follow-system
+- [x] Finer-grained font size / line height
+- [x] Global search: title / directory / time (across sessions and projects)
+- [x] Session export (Markdown / JSON)
 
 ## Later — Backlog
 

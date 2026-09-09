@@ -33,6 +33,10 @@ manage sessions — all from a mobile-first UI.
   MNN model (Qwen3.5-0.8B). The model is bundled with the APK and auto-extracts on first use; when
   a build ships without the weights, it is downloaded from **ModelScope** (fast inside mainland
   China) with per-file SHA-256 verification
+- **On-device voice input** — hold-to-talk speech recognition powered by an on-device **MNN
+  sherpa-mnn streaming Zipformer (bilingual zh/en)** model downloaded from ModelScope (per-file
+  SHA-256 verified). Hold to talk, release to fill the input, slide up to cancel, with a live
+  volume waveform. The mic button appears only after the model is downloaded in Settings
 - **External LLM provider** — bring your own OpenAI-compatible endpoint (`/v1/chat/completions`)
   for suggestion generation, with automatic silent fallback to the on-device model. The
   **Test connection** button sends a real single-turn conversation and shows the model's reply
@@ -48,9 +52,15 @@ manage sessions — all from a mobile-first UI.
 - **Attachments** — send images, PDFs, text, source code and config files from device storage
 - **Terminal mode** — full-screen terminal with PTY over WebSocket
 - **Session management** — search, favorite, categorize, fork, compact, share, export, delete, and
-  pin sessions with new activity
+  pin sessions with new activity; global search across servers/projects; pinned-session
+  drag-to-reorder; search time filter
 - **Model & agent control** — search providers/models, cycle agents, view token usage and context
-- **Multi-server** — connect to several OpenCode servers at once, with stable reconnection
+- **Multi-server** — connect to several OpenCode servers at once, with stable reconnection and
+  one-tap switching from the session list
+- **SSH tunnel** — optionally connect and restart the OpenCode service over an SSH tunnel, with
+  connection health (latency/heartbeat/status) monitoring
+- **Custom Slash commands** — define `/name` commands that insert a prompt, persisted and manageable
+  from the chat input
 - **Adaptive layout** — two-pane (session list + chat) on foldables and tablets, single pane on phones
 - **Settings** — card-grouped sections, language, theme, dynamic color, AMOLED dark mode, accent
   color, notifications, haptics, and more
@@ -165,14 +175,16 @@ app/src/main/
 │   ├── opencode_mnn_jni.cpp  # JNI wrapper (load / streaming generate / reset / release)
 │   ├── CMakeLists.txt        # Links MNN native libs
 │   └── include/              # MNN 3.6.1 headers (version-locked to the .so)
-├── jniLibs/                # Prebuilt MNN runtime (libMNN, libllm, …)
+├── jniLibs/                # Prebuilt MNN runtime (libMNN, libllm, …) + libsherpa-mnn-jni.so (ASR)
 ├── assets/models/          # On-device Qwen3.5-0.8B (MNN) + config + tokenizer
 └── kotlin/org/hiylo/opencode/
     ├── data/api/           # OpenCode server API + SuggestionProvider (external LLM)
     ├── data/repository/    # EventReducer, settings, server/session repositories
     ├── data/sync/          # Cross-device sync (gist/webdav) + Keystore-secured secrets
     ├── ml/MnnLlm.kt        # Kotlin wrapper around the on-device model
-    ├── service/            # Foreground connection service (SSE + reconnection)
+    ├── ml/MnnAsr.kt        # Kotlin wrapper around the on-device ASR (Zipformer) model
+    ├── ml/MnnAsrRecorder.kt# AudioRecord streaming into the ASR recognizer
+    ├── service/            # Foreground connection service (SSE + reconnection) + SshRunner
     └── ui/                 # Compose UI: home, chat, sessions, settings, navigation
 ```
 
