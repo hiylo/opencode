@@ -554,20 +554,39 @@ class EventReducerTest {
     }
 
     @Test
-    fun successfulStatusSnapshot_updatesOnlyReportedSessions() {
+    fun statusSnapshot_keepsOmittedSessionsWhileConnected() {
         val reducer = EventReducer()
         reducer.processEvent(SseEvent.SessionStatus("busy", SessionStatus.Busy), "server")
         reducer.processEvent(SseEvent.SessionStatus("retry", SessionStatus.Retry(1, "later", 2)), "server")
 
+        // Connected (default): the poll must only apply explicitly-reported statuses and
+        // leave omitted sessions untouched so a lagging snapshot doesn't clobber a live Busy.
         reducer.replaceSessionStatuses(
             serverId = "server",
             sessionIds = setOf("busy", "retry"),
             statuses = mapOf("retry" to SessionStatus.Retry(2, "again", 3)),
         )
 
-        // A session absent from the status snapshot keeps its real-time SSE state;
-        // only explicitly reported sessions are overwritten.
         assertEquals(SessionStatus.Busy, reducer.sessionStatuses.value["busy"])
+        assertEquals(SessionStatus.Retry(2, "again", 3), reducer.sessionStatuses.value["retry"])
+    }
+
+    @Test
+    fun statusSnapshot_clearsOmittedSessionsWhileDisconnected() {
+        val reducer = EventReducer()
+        reducer.processEvent(SseEvent.SessionStatus("busy", SessionStatus.Busy), "server")
+        reducer.processEvent(SseEvent.SessionStatus("retry", SessionStatus.Retry(1, "later", 2)), "server")
+
+        // Disconnected: with no SSE stream the poll is the only signal, so omitted sessions
+        // are reconciled to Idle to clear a stale busy badge.
+        reducer.replaceSessionStatuses(
+            serverId = "server",
+            sessionIds = setOf("busy", "retry"),
+            statuses = mapOf("retry" to SessionStatus.Retry(2, "again", 3)),
+            connected = false,
+        )
+
+        assertEquals(SessionStatus.Idle, reducer.sessionStatuses.value["busy"])
         assertEquals(SessionStatus.Retry(2, "again", 3), reducer.sessionStatuses.value["retry"])
     }
 

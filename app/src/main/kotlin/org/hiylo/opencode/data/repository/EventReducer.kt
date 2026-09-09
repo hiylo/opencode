@@ -925,20 +925,33 @@ class EventReducer @Inject constructor() {
         serverId: String,
         sessionIds: Set<String>,
         statuses: Map<String, SessionStatus>,
+        connected: Boolean = true,
     ) {
         val scope = sessionIds + statuses.keys
         scope.forEach { trackSession(serverId, it) }
         _sessionStatuses.update { current ->
-            // Only overwrite sessions the status endpoint explicitly reported; leave sessions
-            // it omitted untouched so real-time SSE Busy states are not clobbered by a stale poll.
-            val next = current + statuses
-            if (next == current) return@update current // no change -> don't trigger downstream recomposition
-            statuses.forEach { (sessionId, status) ->
-                val previous = current[sessionId]
-                if (status is SessionStatus.Idle && previous is SessionStatus.Busy) {
-                    markUnconfirmedCompleted(sessionId)
+            // The /session/status endpoint only reports busy/retry sessions.
+            //
+            // While the SSE stream is connected, it is the real-time source of truth: it pushes
+            // Busy the instant the session starts and Idle the instant it completes. A poll
+            // snapshot can lag (it may not yet include a session that SSE just marked Busy), so
+            // we must NOT reconcile omitted sessions to Idle here — doing so clobbers a genuinely
+            // running session and makes the "busy" badge flicker on/off. Instead we only apply the
+            // statuses the endpoint explicitly reported, leaving omitted sessions untouched.
+            //
+            // While disconnected (no SSE), the poll is our only signal, so an omitted session is
+            // treated as Idle to clear a stale busy badge left behind by a missed completion.
+            val next = current.toMutableMap()
+            for (id in scope) {
+                val newStatus = statuses[id] ?: if (connected) null else SessionStatus.Idle
+                if (newStatus == null) continue
+                val previous = current[id]
+                next[id] = newStatus
+                if (newStatus is SessionStatus.Idle && previous is SessionStatus.Busy) {
+                    markUnconfirmedCompleted(id)
                 }
             }
+            if (next == current) return@update current
             next
         }
     }
@@ -954,6 +967,7 @@ class EventReducer @Inject constructor() {
         val sessionIds = compactedSessions.map { it.id }.toSet()
         _serverSessions.update { current ->
             val existing = current[serverId] ?: emptySet()
+            if (sessionIds.all { it in existing }) return@update current
             current + (serverId to (existing + sessionIds))
         }
         _sessions.update { current ->
@@ -967,7 +981,9 @@ class EventReducer @Inject constructor() {
                     updated.add(session)
                 }
             }
-            updated.sortedByDescending { it.time.updated }
+            val sorted = updated.sortedByDescending { it.time.updated }
+            if (sorted == current) return@update current // no change -> don't recompose downstream lists
+            sorted
         }
     }
 
