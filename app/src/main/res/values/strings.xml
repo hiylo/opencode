@@ -134,6 +134,10 @@
     <string name="session_pinned">Pinned</string>
     <string name="session_pin_move_up">Move pinned session up</string>
     <string name="session_pin_move_down">Move pinned session down</string>
+    <string name="session_pin_sort">Reorder pinned sessions</string>
+    <string name="session_pin_sort_title">Reorder pinned sessions</string>
+    <string name="session_pin_sort_hint">Drag to reorder pinned sessions</string>
+    <string name="session_pin_sort_apply">Apply</string>
     <string name="cross_sessions_title">Pinned and categories</string>
     <string name="cross_sessions_pinned">Pinned</string>
     <string name="cross_sessions_empty_pinned">No pinned sessions on connected servers</string>
@@ -736,6 +740,9 @@ Tokens: ~%4$d -&gt; ~%5$d</string>
     <string name="settings_on_device_model_ready">Ready</string>
     <string name="settings_on_device_model_preparing">Preparing %1$d%%</string>
     <string name="settings_on_device_model_download_failed">Download failed. Check your connection and retry.</string>
+    <string name="settings_asr_model_title">Voice recognition model</string>
+    <string name="settings_asr_model_desc">On-device speech recognition model for voice input (~295 MB)</string>
+    <string name="settings_asr_model_ready">Ready — voice input enabled</string>
     <string name="sync_settings_desc">Sync settings and servers through Gist or WebDAV</string>
     <string name="sync_settings_desc_v2">Sync settings and servers through Gist, WebDAV, or a system file provider</string>
     <string name="sync_settings_primary_desc">Keep settings and servers in a primary storage and optionally mirror them to a backup</string>

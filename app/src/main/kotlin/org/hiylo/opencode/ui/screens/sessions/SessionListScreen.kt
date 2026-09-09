@@ -16,7 +16,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandHorizontally
@@ -25,7 +27,9 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -48,6 +52,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -64,8 +70,10 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import org.hiylo.opencode.R
 import org.hiylo.opencode.data.api.FileNode
 import org.hiylo.opencode.domain.model.Project
+import org.hiylo.opencode.domain.model.ServerConfig
 import org.hiylo.opencode.domain.model.SessionStatus
 import org.hiylo.opencode.domain.model.SessionCategory
+import org.hiylo.opencode.ui.theme.StatusConnected
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
@@ -93,6 +101,8 @@ import org.hiylo.opencode.ui.screens.settings.SessionCategoriesDialog
 import com.google.accompanist.swiperefresh.SwipeRefresh
 import com.google.accompanist.swiperefresh.SwipeRefreshState
 import com.google.accompanist.swiperefresh.rememberSwipeRefreshState
+import sh.calvin.reorderable.ReorderableItem
+import sh.calvin.reorderable.rememberReorderableLazyListState
 
 internal fun shouldRevealPromotedSession(
     previousTopSessionId: String?,
@@ -127,6 +137,65 @@ internal fun recentSessionDirectories(
     }
     .sortedByDescending(RecentSessionDirectory::lastUsed)
     .take(limit)
+
+/** Sort order selectable from the session list filter menu. */
+private enum class SessionSortMode { Newest, Oldest, Title }
+
+/** Time range filter selectable from the session list filter menu. */
+internal enum class SessionTimeFilter {
+    All,
+    Today,
+    LastWeek,
+    LastMonth,
+}
+
+internal fun sessionTimeCutoff(filter: SessionTimeFilter, now: Long = System.currentTimeMillis()): Long = when (filter) {
+    SessionTimeFilter.All -> Long.MIN_VALUE
+    SessionTimeFilter.Today -> {
+        val cal = java.util.Calendar.getInstance()
+        cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+        cal.set(java.util.Calendar.MINUTE, 0)
+        cal.set(java.util.Calendar.SECOND, 0)
+        cal.set(java.util.Calendar.MILLISECOND, 0)
+        cal.timeInMillis
+    }
+    SessionTimeFilter.LastWeek -> now - 7L * 24 * 60 * 60 * 1000
+    SessionTimeFilter.LastMonth -> now - 30L * 24 * 60 * 60 * 1000
+}
+
+private fun sessionTimeComparator(sortMode: SessionSortMode): Comparator<SessionItem> = when (sortMode) {
+    SessionSortMode.Newest -> compareByDescending<SessionItem> { it.session.time.updated }
+    SessionSortMode.Oldest -> compareBy<SessionItem> { it.session.time.updated }
+    SessionSortMode.Title -> compareBy<SessionItem> { it.session.title?.lowercase(Locale.getDefault()).orEmpty() }
+}
+
+private fun displaySessionComparator(sortMode: SessionSortMode): Comparator<SessionItem> =
+    compareByDescending<SessionItem> { it.isPinned }
+        .thenBy { it.pinnedIndex ?: Int.MAX_VALUE }
+        .thenByDescending { it.isFavorite }
+        .thenBy { it.favoriteIndex ?: Int.MAX_VALUE }
+        .then(sessionTimeComparator(sortMode))
+
+private fun sortDisplayGroups(
+    groups: List<ProjectSessionGroup>,
+    sortMode: SessionSortMode,
+): List<ProjectSessionGroup> = groups.sortedWith(
+    compareByDescending<ProjectSessionGroup> { group -> group.sessions.any { it.isPinned } }
+        .thenBy { group -> group.sessions.mapNotNull { it.pinnedIndex }.minOrNull() ?: Int.MAX_VALUE }
+        .then(
+            when (sortMode) {
+                SessionSortMode.Newest -> compareByDescending<ProjectSessionGroup> {
+                    it.sessions.maxOfOrNull { s -> s.session.time.updated } ?: 0L
+                }
+                SessionSortMode.Oldest -> compareBy<ProjectSessionGroup> {
+                    it.sessions.maxOfOrNull { s -> s.session.time.updated } ?: 0L
+                }
+                SessionSortMode.Title -> compareBy<ProjectSessionGroup> {
+                    it.projectName.lowercase(Locale.getDefault())
+                }
+            },
+        ),
+)
 
 /** Pulsing dots loading indicator — 3 dots that scale up/down in sequence. */
 @Composable
@@ -196,6 +265,7 @@ private fun ServerRefreshEdge(
 fun SessionListScreen(
     onNavigateToChat: (sessionId: String, openTerminal: Boolean) -> Unit,
     onNavigateBack: () -> Unit,
+    onSwitchServer: (serverId: String) -> Unit = {},
     viewModel: SessionListViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -222,32 +292,55 @@ fun SessionListScreen(
     var deleteSessionTitle by remember { mutableStateOf("") }
     var showDeleteSelectedDialog by remember { mutableStateOf(false) }
 
+    // Archive confirmation dialog state
+    var showArchiveDialog by remember { mutableStateOf(false) }
+    var archiveSessionId by remember { mutableStateOf("") }
+    var archiveSessionTitle by remember { mutableStateOf("") }
+    var showPinnedSortDialog by remember { mutableStateOf(false) }
+    var showArchiveSelectedDialog by remember { mutableStateOf(false) }
+
     // Project picker dialog state
     var showOpenProject by remember { mutableStateOf(false) }
     var showQuickNewSession by remember { mutableStateOf(false) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var searchActive by rememberSaveable { mutableStateOf(false) }
     var collapsedProjects by rememberSaveable { mutableStateOf(emptySet<String>()) }
+    var sortMode by remember { mutableStateOf(SessionSortMode.Newest) }
+    var directoryFilter by rememberSaveable { mutableStateOf<String?>(null) }
+    var timeFilter by rememberSaveable { mutableStateOf(SessionTimeFilter.All) }
+    var showFilterMenu by remember { mutableStateOf(false) }
+    val recentProjects by viewModel.recentProjects.collectAsState()
     val sessionListState = rememberLazyListState()
     val topSessionId = uiState.sessionGroups.firstOrNull()?.sessions?.firstOrNull()?.session?.id
     var previousTopSessionId by remember { mutableStateOf<String?>(null) }
-    val visibleGroups = remember(uiState.sessionGroups, searchQuery) {
+    val visibleGroups = remember(uiState.sessionGroups, searchQuery, sortMode, directoryFilter, timeFilter) {
         val query = searchQuery.trim()
-        if (query.isEmpty()) {
-            uiState.sessionGroups
-        } else {
-            uiState.sessionGroups.mapNotNull { group ->
+        val dirFilter = directoryFilter?.trimEnd('/')
+        val timeCutoff = sessionTimeCutoff(timeFilter)
+        val filtered = uiState.sessionGroups.mapNotNull { group ->
+            val afterDirectory = if (dirFilter == null) {
+                group.sessions
+            } else {
+                group.sessions.filter { it.session.directory.trimEnd('/') == dirFilter }
+            }
+            val afterTime = afterDirectory.filter { it.session.time.updated >= timeCutoff }
+            if (query.isEmpty()) {
+                group.copy(sessions = afterTime.sortedWith(displaySessionComparator(sortMode)))
+                    .takeIf { afterTime.isNotEmpty() }
+            } else {
                 val projectMatches = group.projectName.contains(query, ignoreCase = true) ||
                     group.directory.contains(query, ignoreCase = true) ||
                     group.branch?.contains(query, ignoreCase = true) == true
-                val sessions = if (projectMatches) group.sessions else group.sessions.filter { item ->
+                val sessions = if (projectMatches) afterTime else afterTime.filter { item ->
                     item.session.title?.contains(query, ignoreCase = true) == true ||
                         item.session.id.contains(query, ignoreCase = true) ||
                         item.session.directory.contains(query, ignoreCase = true)
                 }
-                group.copy(sessions = sessions).takeIf { sessions.isNotEmpty() }
+                group.copy(sessions = sessions.sortedWith(displaySessionComparator(sortMode)))
+                    .takeIf { sessions.isNotEmpty() }
             }
         }
+        sortDisplayGroups(filtered, sortMode)
     }
 
     LaunchedEffect(topSessionId, searchQuery.isNotBlank()) {
@@ -269,8 +362,24 @@ fun SessionListScreen(
 
     val allSessions = uiState.sessionGroups.flatMap { it.sessions }
 
+    val directoryOptions = remember(uiState.sessionGroups) {
+        allSessions
+            .map { it.session.directory.trimEnd('/') }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sortedBy { it.lowercase(Locale.getDefault()) }
+    }
+
+    val recentProjectsForDisplay = remember(recentProjects, uiState.sessionGroups) {
+        val recorded = recentProjects.map { it.trimEnd('/') }
+        val derived = recentSessionDirectories(uiState.sessionGroups.flatMap { it.sessions })
+            .map { it.directory.trimEnd('/') }
+        (recorded + derived).distinct().filter { it.isNotBlank() }.take(8)
+    }
+
     // Precompute once per composition instead of per-row (avoids O(n²) inside LazyColumn items).
     val allFavoritesCount = allSessions.count { it.isFavorite }
+    val allPinnedCount = allSessions.count { it.isPinned }
     val refreshTriggerDistance = 80.dp
     val swipeRefreshState = rememberSwipeRefreshState(uiState.isLoading && allSessions.isNotEmpty())
 
@@ -294,6 +403,13 @@ fun SessionListScreen(
                     actions = {
                         TextButton(onClick = { viewModel.selectAll() }) {
                             Text(stringResource(R.string.sessions_select_all))
+                        }
+                        IconButton(onClick = { showArchiveSelectedDialog = true }) {
+                            Icon(
+                                Icons.Default.Archive,
+                                contentDescription = stringResource(R.string.sessions_archive_selected),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                         IconButton(onClick = { showDeleteSelectedDialog = true }) {
                             Icon(
@@ -393,6 +509,142 @@ fun SessionListScreen(
                                     contentDescription = stringResource(R.string.search_sessions),
                                 )
                             }
+                            Box {
+                                IconButton(onClick = { showFilterMenu = true }) {
+                                    Icon(
+                                        Icons.Default.FilterList,
+                                        contentDescription = stringResource(R.string.sessions_filter),
+                                    )
+                                }
+                                DropdownMenu(
+                                    expanded = showFilterMenu,
+                                    onDismissRequest = { showFilterMenu = false },
+                                    modifier = Modifier.appPopupBorder(),
+                                    containerColor = appPopupContainerColor(),
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.sessions_sort_newest)) },
+                                        leadingIcon = {
+                                            if (sortMode == SessionSortMode.Newest) {
+                                                Icon(Icons.Default.Check, contentDescription = null)
+                                            } else {
+                                                Icon(Icons.Default.Sort, contentDescription = null)
+                                            }
+                                        },
+                                        onClick = {
+                                            sortMode = SessionSortMode.Newest
+                                            showFilterMenu = false
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.sessions_sort_oldest)) },
+                                        leadingIcon = {
+                                            if (sortMode == SessionSortMode.Oldest) {
+                                                Icon(Icons.Default.Check, contentDescription = null)
+                                            } else {
+                                                Icon(Icons.Default.Sort, contentDescription = null)
+                                            }
+                                        },
+                                        onClick = {
+                                            sortMode = SessionSortMode.Oldest
+                                            showFilterMenu = false
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.sessions_sort_title)) },
+                                        leadingIcon = {
+                                            if (sortMode == SessionSortMode.Title) {
+                                                Icon(Icons.Default.Check, contentDescription = null)
+                                            } else {
+                                                Icon(Icons.Default.SortByAlpha, contentDescription = null)
+                                            }
+                                        },
+                                        onClick = {
+                                            sortMode = SessionSortMode.Title
+                                            showFilterMenu = false
+                                        },
+                                    )
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(vertical = 4.dp),
+                                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f),
+                                    )
+                                    Text(
+                                        text = stringResource(R.string.sessions_filter_directory),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.sessions_filter_all_directories)) },
+                                        leadingIcon = {
+                                            if (directoryFilter == null) {
+                                                Icon(Icons.Default.Check, contentDescription = null)
+                                            } else {
+                                                Icon(Icons.Default.Folder, contentDescription = null)
+                                            }
+                                        },
+                                        onClick = {
+                                            directoryFilter = null
+                                            showFilterMenu = false
+                                        },
+                                    )
+                                    directoryOptions.forEach { directory ->
+                                        val selected = directoryFilter == directory
+                                        DropdownMenuItem(
+                                            text = { Text(directory.substringAfterLast('/').ifEmpty { directory }) },
+                                            leadingIcon = {
+                                                if (selected) {
+                                                    Icon(Icons.Default.Check, contentDescription = null)
+                                                } else {
+                                                    Icon(Icons.Default.Folder, contentDescription = null)
+                                                }
+                                            },
+                                            onClick = {
+                                                directoryFilter = directory
+                                                showFilterMenu = false
+                                            },
+                                        )
+                                    }
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(vertical = 4.dp),
+                                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f),
+                                    )
+                                    Text(
+                                        text = stringResource(R.string.sessions_filter_time),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                                    )
+                                    SessionTimeFilter.entries.forEach { filter ->
+                                        val selected = timeFilter == filter
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    stringResource(
+                                                        when (filter) {
+                                                            SessionTimeFilter.All -> R.string.sessions_time_all
+                                                            SessionTimeFilter.Today -> R.string.sessions_time_today
+                                                            SessionTimeFilter.LastWeek -> R.string.sessions_time_week
+                                                            SessionTimeFilter.LastMonth -> R.string.sessions_time_month
+                                                        },
+                                                    ),
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                if (selected) {
+                                                    Icon(Icons.Default.Check, contentDescription = null)
+                                                } else {
+                                                    Icon(Icons.Default.Schedule, contentDescription = null)
+                                                }
+                                            },
+                                            onClick = {
+                                                timeFilter = filter
+                                                showFilterMenu = false
+                                            },
+                                        )
+                                    }
+                                }
+                            }
                         }
                         IconButton(onClick = { viewModel.setGroupSessionsByProject(!groupByProject) }) {
                             Icon(
@@ -418,7 +670,7 @@ fun SessionListScreen(
         },
         floatingActionButton = {
             if (!uiState.isSelectionMode) {
-                FloatingActionButton(
+                SmallFloatingActionButton(
                     onClick = {
                         // If there are known projects, show the quick dialog first;
                         // otherwise go straight to the full directory browser.
@@ -428,8 +680,8 @@ fun SessionListScreen(
                             showOpenProject = true
                         }
                     },
-                    containerColor = if (isAmoled) Color.Black else MaterialTheme.colorScheme.primaryContainer,
-                    contentColor = if (isAmoled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onPrimaryContainer,
+                    containerColor = if (isAmoled) Color.Black else MaterialTheme.colorScheme.primary,
+                    contentColor = if (isAmoled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onPrimary,
                     elevation = if (isAmoled) {
                         FloatingActionButtonDefaults.elevation(
                             defaultElevation = 0.dp,
@@ -455,12 +707,24 @@ fun SessionListScreen(
             }
         }
     ) { padding ->
-        SwipeRefresh(
+        Column(modifier = Modifier
+            .fillMaxSize()
+            .padding(padding)) {
+            // Multi-server one-tap switcher: only shown when more than one server is configured.
+            if (uiState.servers.size > 1 && !uiState.isSelectionMode && !searchActive) {
+                ServerSwitcherRow(
+                    servers = uiState.servers,
+                    currentServerId = viewModel.serverId,
+                    connectedServerIds = uiState.connectedServerIds,
+                    onSwitchServer = onSwitchServer,
+                )
+            }
+            SwipeRefresh(
             state = swipeRefreshState,
             onRefresh = viewModel::loadSessions,
             swipeEnabled = !uiState.isSelectionMode && !uiState.isLoading,
             refreshTriggerDistance = refreshTriggerDistance,
-            modifier = Modifier.fillMaxSize().padding(padding),
+            modifier = Modifier.fillMaxSize().weight(1f),
             indicator = { _, _ -> },
         ) {
             Box(
@@ -534,6 +798,16 @@ fun SessionListScreen(
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        if (recentProjectsForDisplay.isNotEmpty() && searchQuery.isBlank() && !uiState.isSelectionMode) {
+                            item(key = "recent-projects") {
+                                RecentProjectsRow(
+                                    directories = recentProjectsForDisplay,
+                                    onSelect = { directory ->
+                                        viewModel.openRecentProject(directory)
+                                    },
+                                )
+                            }
+                        }
                         if (visibleGroups.isEmpty()) {
                             item(key = "no-search-results") {
                                 Text(
@@ -552,9 +826,9 @@ fun SessionListScreen(
                             val recentSessions = visibleGroups
                                 .flatMap { group -> group.sessions.map { group to it } }
                                 .sortedWith(
-                                    compareByDescending<Pair<ProjectSessionGroup, SessionItem>> { (_, item) -> item.isFavorite }
-                                        .thenBy { (_, item) -> item.favoriteIndex ?: Int.MAX_VALUE }
-                                        .thenByDescending { (_, item) -> item.session.time.updated }
+                                    compareBy(displaySessionComparator(sortMode)) {
+                                        it: Pair<ProjectSessionGroup, SessionItem> -> it.second
+                                    },
                                 )
                             items(recentSessions, key = { (_, item) -> item.session.id }) { (group, item) ->
                                 val untitledLabel = stringResource(R.string.session_untitled)
@@ -564,14 +838,22 @@ fun SessionListScreen(
                                     isSelectionMode = uiState.isSelectionMode,
                                     isSelected = item.session.id in uiState.selectedIds,
                                     favoriteCount = allFavoritesCount,
+                                    pinnedCount = allPinnedCount,
                                     categories = uiState.categories,
                                     onClick = {
-                                        if (uiState.isSelectionMode) viewModel.toggleSelection(item.session.id)
-                                        else onNavigateToChat(item.session.id, false)
+                                        if (uiState.isSelectionMode) {
+                                            viewModel.toggleSelection(item.session.id)
+                                        } else {
+                                            viewModel.recordRecentProject(item.session.directory)
+                                            onNavigateToChat(item.session.id, false)
+                                        }
                                     },
                                     onLongClick = { viewModel.toggleSelection(item.session.id) },
                                     onToggleFavorite = { viewModel.toggleFavorite(item.session.id) },
                                     onMoveFavorite = { offset -> viewModel.moveFavorite(item.session.id, offset) },
+                                    onTogglePin = { viewModel.togglePin(item.session.id) },
+                                    onMovePinned = { offset -> viewModel.movePinned(item.session.id, offset) },
+                                    onSortPinned = { showPinnedSortDialog = true },
                                     onSetCategory = { categoryId ->
                                         viewModel.setSessionCategory(item.session.id, categoryId)
                                     },
@@ -586,6 +868,11 @@ fun SessionListScreen(
                                         deleteSessionId = item.session.id
                                         deleteSessionTitle = item.session.title ?: untitledLabel
                                         showDeleteDialog = true
+                                    },
+                                    onArchive = {
+                                        archiveSessionId = item.session.id
+                                        archiveSessionTitle = item.session.title ?: untitledLabel
+                                        showArchiveDialog = true
                                     },
                                 )
                             }
@@ -619,17 +906,22 @@ fun SessionListScreen(
                                     isSelectionMode = uiState.isSelectionMode,
                                     isSelected = item.session.id in uiState.selectedIds,
                                     favoriteCount = allFavoritesCount,
+                                    pinnedCount = allPinnedCount,
                                     categories = uiState.categories,
                                     onClick = {
                                         if (uiState.isSelectionMode) {
                                             viewModel.toggleSelection(item.session.id)
                                         } else {
+                                            viewModel.recordRecentProject(item.session.directory)
                                             onNavigateToChat(item.session.id, false)
                                         }
                                     },
                                     onLongClick = { viewModel.toggleSelection(item.session.id) },
                                     onToggleFavorite = { viewModel.toggleFavorite(item.session.id) },
                                     onMoveFavorite = { offset -> viewModel.moveFavorite(item.session.id, offset) },
+                                    onTogglePin = { viewModel.togglePin(item.session.id) },
+                                    onMovePinned = { offset -> viewModel.movePinned(item.session.id, offset) },
+                                    onSortPinned = { showPinnedSortDialog = true },
                                     onSetCategory = { categoryId ->
                                         viewModel.setSessionCategory(item.session.id, categoryId)
                                     },
@@ -644,7 +936,12 @@ fun SessionListScreen(
                                         deleteSessionId = item.session.id
                                         deleteSessionTitle = item.session.title ?: untitledLabel
                                         showDeleteDialog = true
-                                    }
+                                    },
+                                    onArchive = {
+                                        archiveSessionId = item.session.id
+                                        archiveSessionTitle = item.session.title ?: untitledLabel
+                                        showArchiveDialog = true
+                                    },
                                 )
                                 }
                             }
@@ -653,6 +950,7 @@ fun SessionListScreen(
                 }
                 }
             }
+        }
         }
     }
 
@@ -684,6 +982,14 @@ fun SessionListScreen(
                 viewModel.createNewSession(directory = directory)
             },
             onDismiss = { showOpenProject = false }
+        )
+    }
+
+    if (showPinnedSortDialog) {
+        PinnedSortDialog(
+            pinnedSessions = allSessions.filter { it.isPinned }.sortedBy { it.pinnedIndex },
+            onReorder = { orderedIds -> viewModel.reorderPinned(orderedIds) },
+            onDismiss = { showPinnedSortDialog = false },
         )
     }
 
@@ -788,6 +1094,167 @@ fun SessionListScreen(
                         }
                     }
                 }
+        }
+    }
+
+    // Archive selected dialog
+    if (showArchiveSelectedDialog) {
+        AppDialog(onDismissRequest = { showArchiveSelectedDialog = false }, modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Text(
+                        text = stringResource(R.string.sessions_archive_selected),
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(stringResource(R.string.sessions_archive_selected_confirm, uiState.selectedIds.size))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        AppSecondaryButton(onClick = { showArchiveSelectedDialog = false }) {
+                            Text(stringResource(R.string.cancel))
+                        }
+                        AppPrimaryButton(
+                            onClick = {
+                                viewModel.archiveSelected()
+                                showArchiveSelectedDialog = false
+                            },
+                        ) {
+                            Text(stringResource(R.string.session_archive))
+                        }
+                    }
+                }
+        }
+    }
+
+    // Archive confirmation dialog
+    if (showArchiveDialog) {
+        AppDialog(onDismissRequest = { showArchiveDialog = false }, modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Text(
+                        text = stringResource(R.string.session_archive),
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(stringResource(R.string.session_archive_confirm, archiveSessionTitle))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        AppSecondaryButton(onClick = { showArchiveDialog = false }) {
+                            Text(stringResource(R.string.cancel))
+                        }
+                        AppPrimaryButton(
+                            onClick = {
+                                viewModel.archiveSession(archiveSessionId)
+                                showArchiveDialog = false
+                            },
+                        ) {
+                            Text(stringResource(R.string.session_archive))
+                        }
+                    }
+                }
+        }
+    }
+}
+
+@Composable
+private fun ServerSwitcherRow(
+    servers: List<ServerConfig>,
+    currentServerId: String,
+    connectedServerIds: Set<String>,
+    onSwitchServer: (String) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Default.Dns,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+        )
+        servers.forEach { server ->
+            val isCurrent = server.id == currentServerId
+            val isConnected = server.id in connectedServerIds
+            SuggestionChip(
+                onClick = { if (!isCurrent) onSwitchServer(server.id) },
+                enabled = !isCurrent && isConnected,
+                label = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        if (isConnected) {
+                            Icon(
+                                Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = if (isCurrent) MaterialTheme.colorScheme.primary else StatusConnected,
+                            )
+                        } else {
+                            Icon(
+                                Icons.Default.Circle,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.outlineVariant,
+                            )
+                        }
+                        Text(
+                            server.displayName,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun RecentProjectsRow(
+    directories: List<String>,
+    onSelect: (String) -> Unit,
+) {
+    if (directories.isEmpty()) return
+    Column(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
+        Text(
+            text = stringResource(R.string.sessions_recent_projects),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp, bottom = 6.dp),
+        )
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(directories, key = { it }) { directory ->
+                val name = directory.substringAfterLast('/').ifEmpty { directory }
+                SuggestionChip(
+                    onClick = { onSelect(directory) },
+                    label = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Icon(
+                                Icons.Default.Folder,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    },
+                )
+            }
         }
     }
 }
@@ -1473,22 +1940,175 @@ private fun NewSessionQuickDialog(
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
+private fun PinnedSortDialog(
+    pinnedSessions: List<SessionItem>,
+    onReorder: (List<String>) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val isAmoled = isAmoledTheme()
+    val haptic = LocalHapticFeedback.current
+    var order by remember(pinnedSessions) {
+        mutableStateOf(pinnedSessions.map { it.session.id })
+    }
+    val listState = rememberLazyListState()
+    val reorderableState = rememberReorderableLazyListState(
+        lazyListState = listState,
+        scrollThreshold = 72.dp,
+    ) { from, to ->
+        if (from.index !in order.indices || to.index !in order.indices) {
+            return@rememberReorderableLazyListState
+        }
+        order = order.toMutableList().apply { add(to.index, removeAt(from.index)) }
+    }
+
+    AppDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 24.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.session_pin_sort_title),
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(horizontal = 24.dp),
+            )
+            Text(
+                text = stringResource(R.string.session_pin_sort_hint),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp),
+            )
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 480.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                itemsIndexed(order, key = { _, id -> id }) { index, id ->
+                    val item = pinnedSessions.firstOrNull { it.session.id == id } ?: return@itemsIndexed
+                    ReorderableItem(reorderableState, key = id) { isDragged ->
+                        val interactionSource = remember(id) { MutableInteractionSource() }
+                        val containerColor = if (isAmoled) {
+                            Color.Black
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerLow
+                        }
+                        Surface(
+                            shape = AppCardShape,
+                            color = containerColor,
+                            border = if (isAmoled) BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)) else null,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .longPressDraggableHandle(
+                                    interactionSource = interactionSource,
+                                    onDragStarted = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    },
+                                )
+                                .graphicsLayer {
+                                    if (isDragged) {
+                                        scaleX = 1.02f
+                                        scaleY = 1.02f
+                                        shadowElevation = 8.dp.toPx()
+                                    }
+                                },
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Text(
+                                    text = "${index + 1}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                                Icon(
+                                    Icons.Default.PushPin,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = item.session.title?.takeIf { it.isNotBlank() }
+                                            ?: stringResource(R.string.session_untitled),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    if (item.session.directory.isNotBlank()) {
+                                        Text(
+                                            text = item.session.directory,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                                Icon(
+                                    Icons.Default.Sort,
+                                    contentDescription = stringResource(R.string.session_pin_sort),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AppSecondaryButton(onClick = onDismiss) {
+                    Text(stringResource(R.string.cancel))
+                }
+                Spacer(Modifier.width(12.dp))
+                AppPrimaryButton(onClick = {
+                    onReorder(order)
+                    onDismiss()
+                }) {
+                    Text(stringResource(R.string.session_pin_sort_apply))
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@Composable
 private fun SessionRow(
     item: SessionItem,
     projectName: String? = null,
     isSelectionMode: Boolean,
     isSelected: Boolean,
     favoriteCount: Int,
+    pinnedCount: Int,
     categories: List<SessionCategory>,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onToggleFavorite: () -> Unit,
     onMoveFavorite: (Int) -> Unit,
+    onTogglePin: () -> Unit,
+    onMovePinned: (Int) -> Unit,
+    onSortPinned: () -> Unit = {},
     onSetCategory: (String?) -> Unit,
     onSaveCategory: (String?, String, String, String) -> Unit,
     onDeleteCategory: (String) -> Unit,
     onRename: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onArchive: () -> Unit
 ) {
     val isAmoled = isAmoledTheme()
     val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
@@ -1537,6 +2157,7 @@ private fun SessionRow(
                     isFavorite = item.isFavorite,
                     category = item.category,
                     contextLabel = projectName.orEmpty(),
+                    isPinned = item.isPinned,
                     leadingContent = {
                         AnimatedVisibility(
                             visible = isSelectionMode,
@@ -1595,6 +2216,19 @@ private fun SessionRow(
                                     showCategoryPicker = true
                                 },
                             )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(if (item.isPinned) R.string.session_unpin else R.string.session_pin)) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.PushPin,
+                                        contentDescription = null,
+                                    )
+                                },
+                                onClick = {
+                                    showActions = false
+                                    onTogglePin()
+                                },
+                            )
                             if (item.isFavorite) {
                                 DropdownMenuItem(
                                     text = { Text(stringResource(R.string.session_favorite_move_up)) },
@@ -1612,6 +2246,35 @@ private fun SessionRow(
                                     onClick = {
                                         showActions = false
                                         onMoveFavorite(1)
+                                    },
+                                )
+                            }
+                            if (item.isPinned) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.session_pin_move_up)) },
+                                    leadingIcon = { Icon(Icons.Default.ArrowUpward, contentDescription = null) },
+                                    enabled = (item.pinnedIndex ?: 0) > 0,
+                                    onClick = {
+                                        showActions = false
+                                        onMovePinned(-1)
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.session_pin_move_down)) },
+                                    leadingIcon = { Icon(Icons.Default.ArrowDownward, contentDescription = null) },
+                                    enabled = (item.pinnedIndex ?: Int.MAX_VALUE) < pinnedCount - 1,
+                                    onClick = {
+                                        showActions = false
+                                        onMovePinned(1)
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.session_pin_sort)) },
+                                    leadingIcon = { Icon(Icons.Default.Sort, contentDescription = null) },
+                                    enabled = pinnedCount > 1,
+                                    onClick = {
+                                        showActions = false
+                                        onSortPinned()
                                     },
                                 )
                             }
@@ -1641,6 +2304,14 @@ private fun SessionRow(
                                 },
                             )
                             DropdownMenuItem(
+                                text = { Text(stringResource(R.string.session_archive)) },
+                                leadingIcon = { Icon(Icons.Default.Archive, contentDescription = null) },
+                                onClick = {
+                                    showActions = false
+                                    onArchive()
+                                },
+                            )
+                            DropdownMenuItem(
                                 text = { Text(stringResource(R.string.delete), color = MaterialTheme.colorScheme.error) },
                                 leadingIcon = {
                                     Icon(
@@ -1664,12 +2335,17 @@ private fun SessionRow(
     }
 
     // Swipe left to reveal a delete button; tapping it opens the confirm dialog.
+    // 允许滑回 Settled 复位，点击展开区域也可复位，避免误触展开后无法清理。
     val dismissGestureEnabled = !isSelectionMode
     val dismissState = rememberSwipeToDismissBoxState(
-        // Allow the row to settle at EndToStart so the delete button stays visible;
-        // tapping the button (not the swipe itself) triggers deletion.
+        // Allow the row to settle at EndToStart so the delete button stays visible,
+        // and back to Settled so an accidental swipe can be undone by swiping right.
         confirmValueChange = { value ->
-            value == SwipeToDismissBoxValue.EndToStart && dismissGestureEnabled
+            if (dismissGestureEnabled) {
+                value == SwipeToDismissBoxValue.EndToStart || value == SwipeToDismissBoxValue.Settled
+            } else {
+                value == SwipeToDismissBoxValue.Settled
+            }
         },
     )
     SwipeToDismissBox(
@@ -1682,7 +2358,8 @@ private fun SessionRow(
                     modifier = Modifier
                         .fillMaxSize()
                         .clip(AppCardShape)
-                        .background(MaterialTheme.colorScheme.errorContainer),
+                        .background(MaterialTheme.colorScheme.errorContainer)
+                        .clickable { scope.launch { dismissState.reset() } },
                     contentAlignment = Alignment.CenterEnd,
                 ) {
                     IconButton(

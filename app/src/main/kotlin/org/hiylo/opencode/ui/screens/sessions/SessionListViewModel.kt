@@ -22,7 +22,9 @@ import org.hiylo.opencode.data.repository.EventReducer
 import org.hiylo.opencode.data.repository.DirectoryScope
 import org.hiylo.opencode.data.repository.SettingsRepository
 import org.hiylo.opencode.data.repository.ServerConnectionStateRepository
+import org.hiylo.opencode.data.repository.ServerRepository
 import org.hiylo.opencode.domain.model.Project
+import org.hiylo.opencode.domain.model.ServerConfig
 import org.hiylo.opencode.domain.model.Session
 import org.hiylo.opencode.domain.model.SessionStatus
 import org.hiylo.opencode.domain.model.SessionCategory
@@ -60,6 +62,10 @@ data class SessionListUiState(
     val selectedIds: Set<String> = emptySet(),
     val isSelectionMode: Boolean = false,
     val categories: List<SessionCategory> = emptyList(),
+    /** All configured servers (for the one-tap server switcher). */
+    val servers: List<ServerConfig> = emptyList(),
+    /** Ids of servers that are currently connected. */
+    val connectedServerIds: Set<String> = emptySet(),
 )
 
 /** A group of sessions belonging to a project. */
@@ -128,6 +134,10 @@ internal fun buildProjectSessionGroups(
             )
         }
         .sortedWith(compareByDescending<ProjectSessionGroup> { group ->
+            group.sessions.any { it.isPinned }
+        }.thenBy { group ->
+            group.sessions.mapNotNull { it.pinnedIndex }.minOrNull() ?: Int.MAX_VALUE
+        }.thenByDescending { group ->
             group.sessions.any { it.isUnconfirmedCompleted }
         }.thenByDescending { group ->
             group.sessions.any { it.isFavorite }
@@ -142,6 +152,7 @@ data class SessionItem(
     val session: Session,
     val status: SessionStatus = SessionStatus.Idle,
     val favoriteIndex: Int? = null,
+    val pinnedIndex: Int? = null,
     val category: SessionCategory? = null,
     val isUnconfirmedCompleted: Boolean = false,
     val unconfirmedCompletedAt: Long = 0L,
@@ -149,10 +160,13 @@ data class SessionItem(
     val lastUserMessageAt: Long = 0L,
 ) {
     val isFavorite: Boolean get() = favoriteIndex != null
+    val isPinned: Boolean get() = pinnedIndex != null
 }
 
 internal fun sortSessionItems(items: List<SessionItem>): List<SessionItem> = items.sortedWith(
-    compareByDescending<SessionItem> { it.isUnconfirmedCompleted }
+    compareByDescending<SessionItem> { it.isPinned }
+        .thenBy { it.pinnedIndex ?: Int.MAX_VALUE }
+        .thenByDescending { it.isUnconfirmedCompleted }
         .thenByDescending { it.isFavorite }
         .thenBy { it.favoriteIndex ?: Int.MAX_VALUE }
         .thenByDescending { it.lastUserMessageAt }
@@ -183,6 +197,7 @@ class SessionListViewModel @Inject constructor(
     private val api: OpenCodeApi,
     private val settingsRepository: SettingsRepository,
     private val connectionStateRepository: ServerConnectionStateRepository,
+    private val serverRepository: ServerRepository,
 ) : ViewModel() {
 
     val serverUrl: String = savedStateHandle.get<String>("serverUrl").orEmpty()
@@ -206,6 +221,18 @@ class SessionListViewModel @Inject constructor(
     )
 
     private val favoriteSessionIds: StateFlow<List<String>> = settingsRepository.favoriteSessionIds(serverId).stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        emptyList(),
+    )
+
+    private val pinnedSessionIds: StateFlow<List<String>> = settingsRepository.pinnedSessionIds(serverId).stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        emptyList(),
+    )
+
+    val recentProjects: StateFlow<List<String>> = settingsRepository.recentProjects(serverId).stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
         emptyList(),
@@ -245,10 +272,13 @@ class SessionListViewModel @Inject constructor(
             _selectedIds,
             eventReducer.vcsBranches,
             favoriteSessionIds,
+            pinnedSessionIds,
             sessionCategories,
             categoryAssignments,
             eventReducer.unconfirmedCompletedSessions,
             eventReducer.lastUserMessageAt,
+            serverRepository.servers,
+            connectionStateRepository.connectedServerIds,
         )
     ) { values ->
         val allSessions = values[0] as List<Session>
@@ -261,11 +291,15 @@ class SessionListViewModel @Inject constructor(
         val selectedIds = values[7] as Set<String>
         val branches = values[8] as Map<DirectoryScope, String?>
         val favoriteIds = values[9] as List<String>
-        val categories = values[10] as List<SessionCategory>
-        val assignments = values[11] as Map<String, String>
-        val unconfirmedCompleted = values[12] as Map<String, Long>
-        val lastUserMessageAt = values[13] as Map<String, Long>
+        val pinnedIds = values[10] as List<String>
+        val categories = values[11] as List<SessionCategory>
+        val assignments = values[12] as Map<String, String>
+        val unconfirmedCompleted = values[13] as Map<String, Long>
+        val lastUserMessageAt = values[14] as Map<String, Long>
+        val servers = values[15] as List<ServerConfig>
+        val connectedServerIds = values[16] as Set<String>
         val favoriteOrder = favoriteIds.withIndex().associate { (index, id) -> id to index }
+        val pinnedOrder = pinnedIds.withIndex().associate { (index, id) -> id to index }
         val categoriesById = categories.associateBy { it.id }
 
         // Filter sessions belonging to this server
@@ -293,6 +327,7 @@ class SessionListViewModel @Inject constructor(
                         ?: childBusyByParent[session.id]
                         ?: SessionStatus.Idle,
                     favoriteIndex = favoriteOrder[session.id],
+                    pinnedIndex = pinnedOrder[session.id],
                     category = assignments[session.id]?.let(categoriesById::get),
                     isUnconfirmedCompleted = session.id in unconfirmedCompleted,
                     unconfirmedCompletedAt = unconfirmedCompleted[session.id] ?: 0L,
@@ -317,6 +352,8 @@ class SessionListViewModel @Inject constructor(
             selectedIds = validSelectedIds,
             isSelectionMode = validSelectedIds.isNotEmpty(),
             categories = categories,
+            servers = servers,
+            connectedServerIds = connectedServerIds,
         )
     }.stateIn(
         viewModelScope,
@@ -365,6 +402,32 @@ class SessionListViewModel @Inject constructor(
         }
     }
 
+    fun togglePin(sessionId: String) {
+        val pinned = pinnedSessionIds.value
+        viewModelScope.launch {
+            settingsRepository.setSessionPinned(
+                serverId = serverId,
+                sessionId = sessionId,
+                pinned = sessionId !in pinned,
+            )
+        }
+    }
+
+    fun movePinned(sessionId: String, offset: Int) {
+        viewModelScope.launch {
+            settingsRepository.movePinnedSession(serverId, sessionId, offset)
+        }
+    }
+
+    /**
+     * 拖拽排序后整体写入置顶会话的新顺序。
+     */
+    fun reorderPinned(orderedIds: List<String>) {
+        viewModelScope.launch {
+            settingsRepository.reorderPinnedSessions(serverId, orderedIds)
+        }
+    }
+
     fun setSessionCategory(sessionId: String, categoryId: String?) {
         viewModelScope.launch {
             settingsRepository.setSessionCategory(serverId, sessionId, categoryId)
@@ -395,32 +458,16 @@ class SessionListViewModel @Inject constructor(
             _isLoading.value = true
             _error.value = null
             try {
-                // Load all projects first
+                // Load all projects first (for grouping/status refresh)
                 val projects = api.listProjects(conn)
                 _projects.value = projects
-                if (BuildConfig.DEBUG) Log.d(TAG, "Loaded ${projects.size} projects for multi-project session fetch")
+                if (BuildConfig.DEBUG) Log.d(TAG, "Loaded ${projects.size} projects")
 
-                if (projects.isEmpty()) {
-                    // Fallback: load sessions without directory header (server CWD only)
-                    val sessions = api.listSessions(conn)
-                    eventReducer.setSessions(serverId, sessions)
-                    if (BuildConfig.DEBUG) Log.d(TAG, "Loaded ${sessions.size} sessions (no projects)")
-                } else {
-                    // Load sessions for each project using its worktree as directory
-                    var totalSessions = 0
-                    for (project in projects) {
-                        try {
-                            val sessions = api.listSessions(conn, directory = project.worktree)
-                            eventReducer.setSessions(serverId, sessions)
-                            totalSessions += sessions.size
-                            if (BuildConfig.DEBUG) Log.d(TAG, "Loaded ${sessions.size} sessions for project ${project.displayName}")
-                        } catch (e: Exception) {
-                            if (e is CancellationException) throw e
-                            Log.w(TAG, "Failed to load sessions for project ${project.displayName}: ${e.message}")
-                        }
-                    }
-                    if (BuildConfig.DEBUG) Log.d(TAG, "Total: loaded $totalSessions sessions across ${projects.size} projects for server $serverId")
-                }
+                // The server's /experimental/session endpoint lists root sessions across ALL projects.
+                val sessions = api.listSessions(conn)
+                eventReducer.setSessions(serverId, sessions)
+                if (BuildConfig.DEBUG) Log.d(TAG, "Loaded ${sessions.size} sessions for server $serverId")
+
                 refreshSessionStatuses(projects)
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
@@ -433,22 +480,18 @@ class SessionListViewModel @Inject constructor(
     }
 
     private suspend fun refreshSessionStatuses(projects: List<Project> = _projects.value) {
-        val directories: List<String?> = projects.map { it.worktree.takeIf(String::isNotBlank) }
-            .ifEmpty { listOf(null) }
         val serverSessionIds = eventReducer.serverSessions.value[serverId].orEmpty()
-        for (directory in directories) {
-            try {
-                val sessionIds = eventReducer.sessions.value.asSequence()
-                    .filter { it.id in serverSessionIds }
-                    .filter { directory == null || it.directory == directory }
-                    .map { it.id }
-                    .toSet()
-                val statuses = api.listSessionStatuses(conn, directory)
-                eventReducer.replaceSessionStatuses(serverId, sessionIds, statuses)
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-                if (BuildConfig.DEBUG) Log.d(TAG, "Failed to refresh project statuses: ${e::class.java.simpleName}")
-            }
+        try {
+            val sessionIds = eventReducer.sessions.value.asSequence()
+                .filter { it.id in serverSessionIds }
+                .map { it.id }
+                .toSet()
+            val statuses = api.listSessionStatuses(conn)
+            val connected = connectionStateRepository.connectedServerIds.value.contains(serverId)
+            eventReducer.replaceSessionStatuses(serverId, sessionIds, statuses, connected)
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            if (BuildConfig.DEBUG) Log.d(TAG, "Failed to refresh session statuses: ${e::class.java.simpleName}")
         }
     }
 
@@ -478,6 +521,7 @@ class SessionListViewModel @Inject constructor(
                 // The SSE stream should pick up the new session, but also add directly
                 eventReducer.setSessions(serverId, listOf(session))
                 if (BuildConfig.DEBUG) Log.d(TAG, "Created new session: ${session.id}")
+                directory?.let { settingsRepository.recordRecentProject(serverId, it) }
                 _navigateToSession.tryEmit(session.id)
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
@@ -493,6 +537,7 @@ class SessionListViewModel @Inject constructor(
                 val success = api.deleteSession(conn, sessionId)
                 if (success) {
                     settingsRepository.setSessionFavorite(serverId, sessionId, false)
+                    settingsRepository.setSessionPinned(serverId, sessionId, false)
                     settingsRepository.setSessionCategory(serverId, sessionId, null)
                     // Remove the session from in-memory state immediately so it disappears
                     // from the list even if the SSE SessionDeleted event is delayed or missing.
@@ -542,6 +587,7 @@ class SessionListViewModel @Inject constructor(
                 val failed = results.filterNot { it.second }
                 results.filter { it.second }.forEach { (id, _) ->
                     settingsRepository.setSessionFavorite(serverId, id, false)
+                    settingsRepository.setSessionPinned(serverId, id, false)
                     settingsRepository.setSessionCategory(serverId, id, null)
                 }
                 if (failed.isNotEmpty()) {
@@ -554,6 +600,72 @@ class SessionListViewModel @Inject constructor(
                 Log.e(TAG, "Failed to delete selected sessions", e)
                 _error.value = e.message ?: "Failed to delete selected sessions"
             }
+        }
+    }
+
+    fun archiveSession(sessionId: String) {
+        viewModelScope.launch {
+            try {
+                api.updateSession(conn, sessionId, archive = true)
+                if (BuildConfig.DEBUG) Log.d(TAG, "Archived session $sessionId")
+                loadSessions()
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                Log.e(TAG, "Failed to archive session", e)
+                _error.value = e.message ?: "Failed to archive session"
+            }
+        }
+    }
+
+    fun archiveSelected() {
+        viewModelScope.launch {
+            val ids = _selectedIds.value
+            if (ids.isEmpty()) return@launch
+            try {
+                val results = coroutineScope {
+                    ids.map { id ->
+                        async {
+                            id to runCatching { api.updateSession(conn, id, archive = true) }
+                        }
+                    }.awaitAll()
+                }
+                val failed = results.filter { it.second.isFailure }
+                if (failed.isNotEmpty()) {
+                    _error.value = "Failed to archive ${failed.size} session(s)"
+                }
+                clearSelection()
+                loadSessions()
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                Log.e(TAG, "Failed to archive selected sessions", e)
+                _error.value = e.message ?: "Failed to archive selected sessions"
+            }
+        }
+    }
+
+    fun recordRecentProject(directory: String) {
+        if (directory.isBlank()) return
+        viewModelScope.launch {
+            settingsRepository.recordRecentProject(serverId, directory)
+        }
+    }
+
+    /**
+     * 打开「最近项目」里的某个目录：优先跳转到该目录下最近活跃的会话，
+     * 仅当该目录下没有任何现存会话时才新建一个（区别于 [createNewSession] 的无条件新建）。
+     */
+    fun openRecentProject(directory: String) {
+        if (directory.isBlank()) return
+        val normalized = directory.trimEnd('/')
+        val target = uiState.value.sessionGroups
+            .firstOrNull { it.directory.trimEnd('/') == normalized }
+            ?.sessions
+            ?.maxByOrNull { it.lastUserMessageAt }
+        if (target != null) {
+            recordRecentProject(directory)
+            _navigateToSession.tryEmit(target.session.id)
+        } else {
+            createNewSession(directory)
         }
     }
 

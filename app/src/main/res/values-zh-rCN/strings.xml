@@ -559,6 +559,10 @@
     <string name="settings_categories_empty">暂时没有分类</string>
     <string name="session_pin_move_up">上移置顶会话</string>
     <string name="session_pin_move_down">下移置顶会话</string>
+    <string name="session_pin_sort">置顶排序</string>
+    <string name="session_pin_sort_title">置顶会话排序</string>
+    <string name="session_pin_sort_hint">拖动调整置顶会话顺序</string>
+    <string name="session_pin_sort_apply">应用</string>
     <string name="update_download_and_install">下载并安装</string>
     <string name="update_downloading_percent">正在下载更新… %1$d%%</string>
     <string name="update_downloading">正在下载更新…</string>
@@ -625,6 +629,9 @@
     <string name="settings_on_device_model_desc">用于离线生成下一步建议的端侧模型（约 522 MB）</string>
     <string name="settings_on_device_model_ready">已就绪</string>
     <string name="settings_on_device_model_preparing">正在准备 %1$d%%</string>
+    <string name="settings_asr_model_title">语音识别模型</string>
+    <string name="settings_asr_model_desc">用于语音输入的端侧语音识别模型（约 295 MB）</string>
+    <string name="settings_asr_model_ready">已就绪 — 语音输入已启用</string>
     <string name="settings_on_device_model_download_failed">下载失败，请检查网络后重试。</string>
     <string name="sync_settings_desc">通过 Gist 或 WebDAV 同步设置和服务器</string>
     <string name="sync_backend">存储</string>

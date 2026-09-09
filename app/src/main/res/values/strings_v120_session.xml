@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Session list filter & sort -->
+    <string name="sessions_filter">Filter &amp; sort</string>
+    <string name="sessions_sort_newest">Newest first</string>
+    <string name="sessions_sort_oldest">Oldest first</string>
+    <string name="sessions_sort_title">Title (A–Z)</string>
+    <string name="sessions_filter_directory">Filter by directory</string>
+    <string name="sessions_filter_all_directories">All directories</string>
+
+    <!-- Batch archive -->
+    <string name="sessions_archive_selected">Archive selected</string>
+    <string name="sessions_archive_selected_confirm">Archive %1$d sessions?</string>
+    <string name="session_archive">Archive session</string>
+    <string name="session_archive_confirm">Archive \"%1$s\"?</string>
+
+    <!-- Recent projects -->
+    <string name="sessions_recent_projects">Recent projects</string>
+
+    <!-- Time filter -->
+    <string name="sessions_filter_time">Filter by time</string>
+    <string name="sessions_time_all">All time</string>
+    <string name="sessions_time_today">Today</string>
+    <string name="sessions_time_week">Last 7 days</string>
+    <string name="sessions_time_month">Last 30 days</string>
+
+    <!-- Global search -->
+    <string name="global_search_title">Global search</string>
+    <string name="global_search_hint">Search across servers…</string>
+    <string name="global_search_empty">No sessions found</string>
+    <string name="global_search_time_all">All time</string>
+    <string name="global_search_time_today">Today</string>
+    <string name="global_search_time_week">Last 7 days</string>
+    <string name="global_search_time_month">Last 30 days</string>
+    <string name="global_search_result_count">%1$d sessions on %2$d connected server(s)</string>
+</resources>

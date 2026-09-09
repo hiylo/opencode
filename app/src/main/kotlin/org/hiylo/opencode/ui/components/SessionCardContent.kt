@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -67,6 +68,7 @@ fun SessionCardContent(
     category: SessionCategory?,
     contextLabel: String,
     contextDetail: String? = null,
+    isPinned: Boolean = false,
     isOffline: Boolean = false,
     leadingContent: @Composable () -> Unit = {},
     trailingContent: @Composable () -> Unit,
@@ -175,6 +177,14 @@ fun SessionCardContent(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (isPinned) {
+                    Icon(
+                        Icons.Default.PushPin,
+                        contentDescription = stringResource(R.string.session_pinned),
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.secondary.copy(alpha = 0.8f),
+                    )
+                }
                 if (isFavorite) {
                     Icon(
                         Icons.Default.Star,

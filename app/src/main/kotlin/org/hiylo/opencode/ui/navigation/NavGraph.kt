@@ -58,6 +58,7 @@ import org.hiylo.opencode.ui.screens.git.GitScreen
 import org.hiylo.opencode.ui.screens.home.HomeScreen
 import org.hiylo.opencode.ui.screens.about.AboutScreen
 import org.hiylo.opencode.ui.screens.sessions.SessionListScreen
+import org.hiylo.opencode.ui.screens.sessions.GlobalSearchScreen
 import org.hiylo.opencode.ui.screens.sessions.CrossServerSessionsScreen
 import org.hiylo.opencode.ui.screens.settings.SettingsScreen
 import org.hiylo.opencode.ui.components.isAmoledTheme
@@ -413,6 +414,9 @@ fun NavGraph(
                 onNavigateToCrossServerSessions = {
                     navController.navigate(Screen.CrossServerSessions.route)
                 },
+                onNavigateToGlobalSearch = {
+                    navController.navigate(Screen.GlobalSearch.route)
+                },
                 onNavigateToServerSettings = { serverUrl, username, password, serverName, serverId ->
                     navController.navigate(
                         Screen.ServerSettings.createRoute(serverUrl, username, password, serverName, serverId)
@@ -456,6 +460,26 @@ fun NavGraph(
                         putExtra("server_password", server.password)
                     }
                     ContextCompat.startForegroundService(context, intent)
+                },
+            )
+        }
+
+        composable(Screen.GlobalSearch.route) {
+            GlobalSearchScreen(
+                onNavigateBack = { navController.popBackStack() },
+                onOpenSession = { item ->
+                    if (item.server.id in connectedServerIds) {
+                        navController.navigate(
+                            Screen.Chat.createRoute(
+                                serverUrl = item.server.url,
+                                username = item.server.username,
+                                password = item.server.password.orEmpty(),
+                                serverName = item.server.displayName,
+                                serverId = item.server.id,
+                                sessionId = item.session.id,
+                            ),
+                        )
+                    }
                 },
             )
         }
@@ -677,11 +701,63 @@ fun NavGraph(
             var paneSessionId by rememberSaveable { mutableStateOf<String?>(null) }
             var paneOpenTerminal by rememberSaveable { mutableStateOf(false) }
             val paneNavController = rememberNavController()
+            val allServers by serverRepository.servers.collectAsState(initial = emptyList())
+
+            fun switchToServer(targetServerId: String) {
+                val target = allServers.find { it.id == targetServerId } ?: return
+                if (target.id == serverId) return
+                navController.navigate(
+                    Screen.SessionList.createRoute(
+                        serverUrl = target.url,
+                        username = target.username,
+                        password = target.password.orEmpty(),
+                        serverName = target.displayName,
+                        serverId = target.id,
+                    ),
+                ) {
+                    popUpTo(Screen.Home.route)
+                    launchSingleTop = true
+                }
+            }
 
             fun paneChatRoute(sessionId: String, openTerminal: Boolean): String =
                 "pane_chat?serverUrl=$serverUrl&username=$username&password=$password" +
                     "&serverName=$serverName&serverId=$serverId&sessionId=$sessionId" +
                     "&openTerminal=$openTerminal"
+
+            /**
+             * 从会话内跳转到另一个会话（子会话/相关会话）时压栈导航，
+             * 保留父会话在 pane 返回栈中，返回时逐级回到父会话。
+             */
+            fun pushPaneSession(sessionId: String, openTerminal: Boolean) {
+                paneNavController.navigate(paneChatRoute(sessionId, openTerminal)) {
+                    launchSingleTop = false
+                }
+            }
+
+            /**
+             * pane 返回处理：若当前处于子会话（栈深 > 1），逐级弹出回到父会话；
+             * 仅在回到栈底占位页时清空 paneSessionId。
+             */
+            fun paneBack() {
+                val stack = paneNavController.currentBackStack.value
+                if (stack.size <= 1) {
+                    paneSessionId = null
+                    paneOpenTerminal = false
+                    return
+                }
+                paneNavController.popBackStack()
+                // 弹出后把 paneSessionId 同步到当前可见会话：子会话返回父会话时保持父会话，
+                // 回到占位页时清空。
+                val top = paneNavController.currentBackStackEntry
+                val visibleSessionId = top?.arguments?.getString("sessionId")
+                if (top?.destination?.route?.startsWith("pane_chat") == true && !visibleSessionId.isNullOrBlank()) {
+                    paneSessionId = visibleSessionId
+                } else {
+                    paneSessionId = null
+                }
+                paneOpenTerminal = false
+            }
 
             BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                 val isWide = maxWidth >= 600.dp
@@ -694,6 +770,9 @@ fun NavGraph(
                                     paneOpenTerminal = openTerminal
                                 },
                                 onNavigateBack = { navController.popBackStack() },
+                                onSwitchServer = { targetServerId ->
+                                    switchToServer(targetServerId)
+                                },
                             )
                         }
                         VerticalDivider()
@@ -723,14 +802,12 @@ fun NavGraph(
                                         EmptyPanePlaceholder()
                                     } else {
                                         ChatScreen(
-                                            onNavigateBack = { paneSessionId = null },
+                                            onNavigateBack = { paneBack() },
                                             onNavigateToSession = { newSessionId ->
-                                                paneSessionId = newSessionId
-                                                paneOpenTerminal = false
+                                                pushPaneSession(newSessionId, openTerminal = false)
                                             },
                                             onNavigateToChildSession = { childSessionId ->
-                                                paneSessionId = childSessionId
-                                                paneOpenTerminal = false
+                                                pushPaneSession(childSessionId, openTerminal = false)
                                             },
                                             onOpenGit = {
                                                 val directory = eventReducer.sessions.value
@@ -764,7 +841,7 @@ fun NavGraph(
                                 if (current != null) {
                                     val targetUri = paneChatRoute(current, paneOpenTerminal)
                                         .substringBefore('?')
-                                    val isAlreadyOnSession = currRoute == targetUri &&
+                                    val isAlreadyOnSession = currRoute?.startsWith("pane_chat") == true &&
                                         paneNavController.currentBackStackEntry
                                             ?.arguments?.getString("sessionId") == current
                                     if (!isAlreadyOnSession) {
@@ -803,7 +880,10 @@ fun NavGraph(
                         },
                         onNavigateBack = {
                             navController.popBackStack()
-                        }
+                        },
+                        onSwitchServer = { targetServerId ->
+                            switchToServer(targetServerId)
+                        },
                     )
                 }
             }

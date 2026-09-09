@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 会话列表筛选与排序 -->
+    <string name="sessions_filter">筛选与排序</string>
+    <string name="sessions_sort_newest">最新优先</string>
+    <string name="sessions_sort_oldest">最旧优先</string>
+    <string name="sessions_sort_title">按标题（A–Z）</string>
+    <string name="sessions_filter_directory">按目录筛选</string>
+    <string name="sessions_filter_all_directories">全部目录</string>
+
+    <!-- 批量归档 -->
+    <string name="sessions_archive_selected">归档所选</string>
+    <string name="sessions_archive_selected_confirm">归档 %1$d 个会话？</string>
+    <string name="session_archive">归档会话</string>
+    <string name="session_archive_confirm">归档 \"%1$s\"？</string>
+
+    <!-- 最近项目 -->
+    <string name="sessions_recent_projects">最近项目</string>
+
+    <!-- 时间筛选 -->
+    <string name="sessions_filter_time">按时间筛选</string>
+    <string name="sessions_time_all">全部时间</string>
+    <string name="sessions_time_today">今天</string>
+    <string name="sessions_time_week">最近 7 天</string>
+    <string name="sessions_time_month">最近 30 天</string>
+
+    <!-- 全局搜索 -->
+    <string name="global_search_title">全局搜索</string>
+    <string name="global_search_hint">跨服务器搜索…</string>
+    <string name="global_search_empty">未找到会话</string>
+    <string name="global_search_time_all">全部时间</string>
+    <string name="global_search_time_today">今天</string>
+    <string name="global_search_time_week">最近 7 天</string>
+    <string name="global_search_time_month">最近 30 天</string>
+    <string name="global_search_result_count">%1$d 个会话 · %2$d 台服务器已连接</string>
+</resources>
