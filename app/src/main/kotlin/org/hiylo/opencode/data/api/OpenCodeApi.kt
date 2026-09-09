@@ -246,11 +246,20 @@ class OpenCodeApi @Inject constructor(
         return response.status.isSuccess()
     }
 
-    suspend fun updateSession(conn: ServerConnection, sessionId: String, title: String): Session {
+    suspend fun updateSession(
+        conn: ServerConnection,
+        sessionId: String,
+        title: String? = null,
+        archive: Boolean? = null,
+    ): Session {
+        val body = buildMap {
+            title?.let { put("title", it) }
+            archive?.let { put("archive", it) }
+        }
         return httpClient.patch("${conn.baseUrl}/session/$sessionId") {
             conn.authHeader?.let { header("Authorization", it) }
             contentType(ContentType.Application.Json)
-            setBody(mapOf("title" to title))
+            setBody(body)
         }.body()
     }
 

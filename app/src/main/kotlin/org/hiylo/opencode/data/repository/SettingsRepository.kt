@@ -54,6 +54,7 @@ class SettingsRepository @Inject constructor(
         private val THEME_KEY = stringPreferencesKey("app_theme")
         private val DYNAMIC_COLOR_KEY = booleanPreferencesKey("dynamic_color")
         private val FONT_SIZE_KEY = stringPreferencesKey("chat_font_size")
+        private val LINE_HEIGHT_KEY = floatPreferencesKey("chat_line_height")
         private val NOTIFICATIONS_KEY = booleanPreferencesKey("notifications_enabled")
 
         private val INITIAL_MESSAGE_COUNT_KEY = intPreferencesKey("initial_message_count")
@@ -86,6 +87,7 @@ private val SESSION_CATEGORIES_KEY = stringPreferencesKey("session_categories")
          private val FAVORITE_SESSION_SNAPSHOTS_KEY = stringPreferencesKey("favorite_session_snapshots")
          private val LLM_PROVIDER_BASE_URL_KEY = stringPreferencesKey("llm_provider_base_url")
          private val LLM_PROVIDER_MODEL_KEY = stringPreferencesKey("llm_provider_model")
+         private val CUSTOM_COMMANDS_KEY = stringPreferencesKey("custom_commands")
 
         /** SharedPreferences name used for synchronous locale reads in attachBaseContext. */
         private const val LOCALE_PREFS = "locale_prefs"
@@ -95,6 +97,8 @@ private val SESSION_CATEGORIES_KEY = stringPreferencesKey("session_categories")
         private const val SERVER_PINNED_SESSIONS_PREFIX = "server_pinned_sessions_"
         private const val SERVER_FAVORITE_SESSIONS_PREFIX = "server_favorite_sessions_"
         private const val SERVER_SESSION_CATEGORY_PREFIX = "server_session_category_"
+        private const val SERVER_PINNED_IDS_PREFIX = "server_pinned_ids_"
+        private const val SERVER_RECENT_PROJECTS_PREFIX = "server_recent_projects_"
 
         internal fun dynamicColorEnabled(preferences: Preferences): Boolean =
             preferences[DYNAMIC_COLOR_KEY] ?: DEFAULT_DYNAMIC_COLOR
@@ -123,6 +127,12 @@ private val SESSION_CATEGORIES_KEY = stringPreferencesKey("session_categories")
 
     private fun serverSessionCategoryKey(serverId: String) =
         stringPreferencesKey(SERVER_SESSION_CATEGORY_PREFIX + serverId)
+
+    private fun serverPinnedIdsKey(serverId: String) =
+        stringPreferencesKey(SERVER_PINNED_IDS_PREFIX + serverId)
+
+    private fun serverRecentProjectsKey(serverId: String) =
+        stringPreferencesKey(SERVER_RECENT_PROJECTS_PREFIX + serverId)
 
     val sessionCategories: Flow<List<SessionCategory>> = dataStore.data.map { preferences ->
         preferences[SESSION_CATEGORIES_KEY]?.let { encoded ->
@@ -263,6 +273,98 @@ private val SESSION_CATEGORIES_KEY = stringPreferencesKey("session_categories")
         }
     }
 
+    fun pinnedSessionIds(serverId: String): Flow<List<String>> = dataStore.data.map { preferences ->
+        preferences[serverPinnedIdsKey(serverId)]
+            ?.lineSequence()
+            ?.filter(String::isNotBlank)
+            ?.distinct()
+            ?.toList()
+            .orEmpty()
+    }
+
+    suspend fun setSessionPinned(serverId: String, sessionId: String, pinned: Boolean) {
+        dataStore.edit { preferences ->
+            val key = serverPinnedIdsKey(serverId)
+            val current = (preferences[key] ?: "")
+                .lineSequence()
+                .filter(String::isNotBlank)
+                .distinct()
+                .toMutableList()
+            val updated = if (pinned) {
+                listOf(sessionId) + current.filterNot { it == sessionId }
+            } else {
+                current.filterNot { it == sessionId }
+            }
+            preferences[key] = updated.joinToString("\n")
+        }
+    }
+
+    suspend fun movePinnedSession(serverId: String, sessionId: String, offset: Int) {
+        if (offset == 0) return
+        dataStore.edit { preferences ->
+            val key = serverPinnedIdsKey(serverId)
+            val current = (preferences[key] ?: "")
+                .lineSequence()
+                .filter(String::isNotBlank)
+                .distinct()
+                .toMutableList()
+            val from = current.indexOf(sessionId)
+            if (from < 0) return@edit
+            val to = (from + offset).coerceIn(0, current.lastIndex)
+            if (from == to) return@edit
+            val tmp = current[from]
+            current[from] = current[to]
+            current[to] = tmp
+            preferences[key] = current.joinToString("\n")
+        }
+    }
+
+    /**
+     * 批量重排置顶会话顺序（拖拽排序后按新的顺序整体写入）。
+     */
+    suspend fun reorderPinnedSessions(serverId: String, orderedIds: List<String>) {
+        val clean = orderedIds.filter(String::isNotBlank).distinct()
+        if (clean.isEmpty()) return
+        dataStore.edit { preferences ->
+            val key = serverPinnedIdsKey(serverId)
+            val current = (preferences[key] ?: "")
+                .lineSequence()
+                .filter(String::isNotBlank)
+                .distinct()
+                .toList()
+            if (current.isEmpty()) return@edit
+            val currentSet = current.toSet()
+            if (clean.any { it !in currentSet }) return@edit
+            // Preserve any pinned ids that were not part of the drag as trailing entries.
+            val reordered = (clean + current.filter { it !in clean }).distinct()
+            preferences[key] = reordered.joinToString("\n")
+        }
+    }
+
+    fun recentProjects(serverId: String): Flow<List<String>> = dataStore.data.map { preferences ->
+        preferences[serverRecentProjectsKey(serverId)]
+            ?.lineSequence()
+            ?.filter(String::isNotBlank)
+            ?.distinct()
+            ?.toList()
+            .orEmpty()
+    }
+
+    suspend fun recordRecentProject(serverId: String, directory: String) {
+        val trimmed = directory.trim().trimEnd('/')
+        if (trimmed.isBlank()) return
+        dataStore.edit { preferences ->
+            val key = serverRecentProjectsKey(serverId)
+            val current = (preferences[key] ?: "")
+                .lineSequence()
+                .filter(String::isNotBlank)
+                .distinct()
+                .toMutableList()
+            val updated = (listOf(trimmed) + current.filterNot { it == trimmed }).take(20)
+            preferences[key] = updated.joinToString("\n")
+        }
+    }
+
     suspend fun setCrossServerFavoriteOrderItem(itemKey: String, favorite: Boolean) {
         dataStore.edit { preferences ->
             val current = preferences[CROSS_SERVER_FAVORITE_ORDER_KEY]
@@ -347,6 +449,52 @@ private val SESSION_CATEGORIES_KEY = stringPreferencesKey("session_categories")
         dataStore.edit { preferences ->
             preferences[FONT_SIZE_KEY] = size
         }
+    }
+
+    /**
+     * Chat line spacing multiplier (1.0 = default, up to 2.0). Default: 1.0.
+     */
+    val chatLineHeight: Flow<Float> = dataStore.data.map { preferences ->
+        (preferences[LINE_HEIGHT_KEY] ?: 1f).coerceIn(1f, 2f)
+    }
+
+    suspend fun setChatLineHeight(multiplier: Float) {
+        dataStore.edit { preferences ->
+            preferences[LINE_HEIGHT_KEY] = multiplier.coerceIn(1f, 2f)
+        }
+    }
+
+    /** 自定义 Slash 命令（用户自定义 /name → prompt）。 */
+    @kotlinx.serialization.Serializable
+    data class CustomCommand(val name: String, val prompt: String)
+
+    val customCommands: Flow<List<CustomCommand>> = dataStore.data.map { preferences ->
+        val raw = preferences[CUSTOM_COMMANDS_KEY] ?: return@map emptyList()
+        runCatching { Json.decodeFromString<List<CustomCommand>>(raw) }.getOrDefault(emptyList())
+    }
+
+    suspend fun addCustomCommand(name: String, prompt: String): Boolean {
+        var added = false
+        dataStore.edit { preferences ->
+            val current = decodeCustomCommands(preferences).toMutableList()
+            if (current.any { it.name == name }) return@edit
+            current.add(CustomCommand(name, prompt))
+            preferences[CUSTOM_COMMANDS_KEY] = Json.encodeToString(current)
+            added = true
+        }
+        return added
+    }
+
+    suspend fun removeCustomCommand(name: String) {
+        dataStore.edit { preferences ->
+            val current = decodeCustomCommands(preferences).filterNot { it.name == name }
+            preferences[CUSTOM_COMMANDS_KEY] = Json.encodeToString(current)
+        }
+    }
+
+    private fun decodeCustomCommands(preferences: Preferences): List<CustomCommand> {
+        val raw = preferences[CUSTOM_COMMANDS_KEY] ?: return emptyList()
+        return runCatching { Json.decodeFromString<List<CustomCommand>>(raw) }.getOrDefault(emptyList())
     }
 
     /**

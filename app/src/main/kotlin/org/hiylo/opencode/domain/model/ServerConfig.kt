@@ -23,30 +23,38 @@ data class ServerConfig(
     val name: String? = null, // User-friendly name
     val autoConnect: Boolean = false,
     val lastConnected: Long? = null,
-    val isHealthy: Boolean = false
+    val isHealthy: Boolean = false,
+    // SSH 隧道（可选）：配置后通过 SSH 本地端口转发连接并重启服务。
+    val sshPort: Int = 22,
+    val sshUsername: String = "",
+    val sshPassword: String? = null,
 ) {
     val displayName: String
         get() = name ?: url
-    
+
+    /** 是否启用 SSH 隧道（以是否填写了 SSH 用户名判定）。 */
+    val useSsh: Boolean
+        get() = sshUsername.isNotBlank()
+
+    /** OpenCode 服务端口（显式端口，否则回退 http/https 默认端口）。 */
+    val openCodePort: Int
+        get() = try {
+            val parsed = java.net.URL(url)
+            val explicitPort = parsed.port
+            if (explicitPort != -1) explicitPort else parsed.defaultPort
+        } catch (e: Exception) {
+            url.substringAfterLast(":").toIntOrNull() ?: 80
+        }
+
     val host: String
         get() = try {
             java.net.URL(url).host
         } catch (e: Exception) {
             url.substringAfter("://").substringBefore(":")
         }
-    
+
     val port: Int
-        get() = try {
-            val parsed = java.net.URL(url)
-            val explicitPort = parsed.port
-            if (explicitPort != -1) {
-                explicitPort
-            } else {
-                parsed.defaultPort // 80 for http, 443 for https
-            }
-        } catch (e: Exception) {
-            url.substringAfterLast(":").toIntOrNull() ?: 80
-        }
+        get() = openCodePort
 }
 
 /**
