@@ -13,6 +13,8 @@ import org.hiylo.opencode.logging.AppLogger as Log
 import org.hiylo.opencode.BuildConfig
 import org.hiylo.opencode.R
 import org.hiylo.opencode.ml.MnnLlm
+import org.hiylo.opencode.ml.MnnAsr
+import org.hiylo.opencode.ml.MnnAsrRecorder
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -44,6 +46,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
@@ -133,10 +136,17 @@ data class ChatUiState(
     val modelDownloading: Boolean = false,
     /** Download progress percentage (0..100) while [modelDownloading]. */
     val modelDownloadProgress: Int = 0,
+    /** Whether the currently selected model supports image/vision attachments. */
+    val modelSupportsVision: Boolean = false,
 )
 
-data class ContextUsageDetails(
-    val input: Int = 0,
+/** 用户自定义的 Slash 命令（/name 插入 prompt）。 */
+data class CustomSlashCommand(
+    val name: String,
+    val prompt: String,
+)
+
+data class ContextUsageDetails(    val input: Int = 0,
     val output: Int = 0,
     val reasoning: Int = 0,
     val cacheRead: Int = 0,
@@ -355,9 +365,49 @@ class ChatViewModel @Inject constructor(
     private val _confirmedFilePaths = MutableStateFlow<Set<String>>(emptySet())
     val confirmedFilePaths: StateFlow<Set<String>> = _confirmedFilePaths
 
+    // ============ Voice input (ASR) ============
+    /** Whether the mic is currently recording / recognizing. */
+    private val _isListening = MutableStateFlow(false)
+    val isListening: StateFlow<Boolean> = _isListening
+    /** One-shot final recognition result (appended to the input). */
+    private val _recognizedText = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val recognizedText: SharedFlow<String> = _recognizedText
+    /** Real-time partial recognition results (replaces the previous partial in the input). */
+    private val _partialRecognizedText = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val partialRecognizedText: SharedFlow<String> = _partialRecognizedText
+    /** Live microphone volume level (rmsdB, ~0..10) for the waveform UI. */
+    private val _voiceLevel = MutableStateFlow(0f)
+    val voiceLevel: StateFlow<Float> = _voiceLevel
+    /** One-shot ASR error message resource id (null when none). */
+    private val _speechError = MutableStateFlow<Int?>(null)
+    val speechError: StateFlow<Int?> = _speechError
+    private var speechRecognition: SpeechRecognition? = null
+    private var asrRecorder: MnnAsrRecorder? = null
+
+    /** 用户自定义 Slash 命令。 */
+    val customCommands: StateFlow<List<CustomSlashCommand>> =
+        settingsRepository.customCommands.map { list ->
+            list.map { CustomSlashCommand(it.name, it.prompt) }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun addCustomCommand(name: String, prompt: String): Boolean {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty() || prompt.isBlank()) return false
+        if (customCommands.value.any { it.name == trimmed }) return false
+        viewModelScope.launch { settingsRepository.addCustomCommand(trimmed, prompt) }
+        return true
+    }
+
+    fun removeCustomCommand(name: String) {
+        viewModelScope.launch { settingsRepository.removeCustomCommand(name) }
+    }
+
     // ============ Settings (exposed for ChatScreen) ============
     val chatFontSize = settingsRepository.chatFontSize.stateIn(
         viewModelScope, SharingStarted.WhileSubscribed(5000), "medium"
+    )
+    val chatLineHeight = settingsRepository.chatLineHeight.stateIn(
+        viewModelScope, SharingStarted.WhileSubscribed(5000), 1f
     )
     val codeWordWrap = settingsRepository.codeWordWrap.stateIn(
         viewModelScope, SharingStarted.WhileSubscribed(5000), false
@@ -1199,8 +1249,73 @@ class ChatViewModel @Inject constructor(
 
     override fun onCleared() {
         closeTerminalSession()
+        cancelListening()
         super.onCleared()
         saveDraft()
+    }
+
+    // ============ Voice input (ASR) ============
+
+    /** 开始语音识别（按住说话）。调用方需已确保 RECORD_AUDIO 权限。 */
+    fun startListening() {
+        if (_isListening.value) return
+        val recorder = MnnAsrRecorder(context)
+        _isListening.value = true
+        _voiceLevel.value = 0f
+        asrRecorder = recorder
+        viewModelScope.launch {
+            val ok = recorder.start(object : MnnAsrRecorder.Listener {
+                override fun onStart() {
+                    _isListening.value = true
+                }
+
+                override fun onPartialResult(text: String) {
+                    _partialRecognizedText.tryEmit(text)
+                }
+
+                override fun onError(message: String) {
+                    _speechError.value = R.string.chat_voice_input_error
+                }
+
+                override fun onStopped() {
+                    _isListening.value = false
+                    _voiceLevel.value = 0f
+                    if (asrRecorder === recorder) asrRecorder = null
+                }
+            })
+            if (!ok) {
+                _isListening.value = false
+                _voiceLevel.value = 0f
+                if (asrRecorder === recorder) asrRecorder = null
+            }
+        }
+    }
+
+    /** 停止语音识别（松手上屏）。 */
+    fun stopListening() {
+        val recorder = asrRecorder
+        asrRecorder = null
+        _isListening.value = false
+        _voiceLevel.value = 0f
+        if (recorder != null) {
+            viewModelScope.launch { recorder.stop() }
+        }
+    }
+
+    /** 取消语音识别（上滑取消），不产生结果。 */
+    fun cancelListening() {
+        val recorder = asrRecorder
+        asrRecorder = null
+        _isListening.value = false
+        _voiceLevel.value = 0f
+        if (recorder != null) {
+            viewModelScope.launch { recorder.cancel() }
+        }
+    }
+
+    /** 消费并清除当前的 ASR 错误提示。 */
+    fun consumeSpeechError() {
+        _speechError.value = null
     }
 
     /** Get the session directory for building file:// URLs */
@@ -2126,6 +2241,21 @@ class ChatViewModel @Inject constructor(
     fun editUserMessage(messageId: String) {
         val message = uiState.value.messages.lastOrNull { it.message.id == messageId && it.isUser } ?: return
         restoreRevertedDraft(extractRevertedDraft(message))
+    }
+
+    /** 引用回复一条消息：把其文本以 markdown 引用块填入输入框。 */
+    fun quoteMessage(messageId: String) {
+        val message = uiState.value.messages.lastOrNull { it.message.id == messageId } ?: return
+        val text = message.parts
+            .filterIsInstance<Part.Text>()
+            .filterNot { it.ignored == true }
+            .joinToString("\n") { it.text }
+            .trim()
+        if (text.isBlank()) return
+        val quoted = text.lineSequence().joinToString("\n") { "> $it" }
+        val current = _draftText.value
+        val merged = if (current.isBlank()) "$quoted\n" else "$current\n$quoted\n"
+        updateDraftText(merged)
     }
 
     /**

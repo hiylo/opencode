@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="custom_command_manage">Manage custom commands…</string>
+    <string name="custom_command_title">Custom commands</string>
+    <string name="custom_command_empty">No custom commands yet. Add one below.</string>
+    <string name="custom_command_name_label">Command name (e.g. review)</string>
+    <string name="custom_command_prompt_label">Prompt to insert</string>
+    <string name="custom_command_add">Add</string>
+    <string name="custom_command_add_failed">Name already exists or fields are empty.</string>
+    <string name="custom_command_delete">Delete %1$s</string>
+    <string name="subagent_status_running">Running</string>
+    <string name="subagent_status_completed">Completed</string>
+    <string name="subagent_status_failed">Failed</string>
+    <string name="subagent_status_pending">Pending</string>
+</resources>

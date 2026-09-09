@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="chat_quote_reply">Quote reply</string>
+    <string name="chat_edit_resend">Edit &amp; resend</string>
+    <string name="chat_today">Today</string>
+    <string name="chat_yesterday">Yesterday</string>
+    <string name="chat_earlier">Earlier</string>
+    <string name="chat_code_expand">Expand</string>
+    <string name="chat_code_collapse">Collapse</string>
+    <string name="chat_empty_quick_start">Quick start</string>
+    <string name="chat_empty_prompt_1">Help me implement a new feature</string>
+    <string name="chat_empty_prompt_2">Review the recent changes</string>
+    <string name="chat_empty_prompt_3">Explain this code</string>
+</resources>

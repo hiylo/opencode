@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="custom_command_manage">管理自定义命令…</string>
+    <string name="custom_command_title">自定义命令</string>
+    <string name="custom_command_empty">还没有自定义命令，在下方添加一个。</string>
+    <string name="custom_command_name_label">命令名称（例如 review）</string>
+    <string name="custom_command_prompt_label">要插入的提示词</string>
+    <string name="custom_command_add">添加</string>
+    <string name="custom_command_add_failed">名称已存在或字段为空。</string>
+    <string name="custom_command_delete">删除 %1$s</string>
+    <string name="subagent_status_running">运行中</string>
+    <string name="subagent_status_completed">已完成</string>
+    <string name="subagent_status_failed">失败</string>
+    <string name="subagent_status_pending">等待中</string>
+</resources>

@@ -174,6 +174,7 @@ import org.hiylo.opencode.data.api.PromptPart
 import org.hiylo.opencode.data.api.ProviderInfo
 import org.hiylo.opencode.data.api.ProviderModel
 import org.hiylo.opencode.MainActivity
+import org.hiylo.opencode.ui.screens.settings.SessionExport
 import org.hiylo.opencode.ui.theme.CodeTypography
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
@@ -190,7 +191,9 @@ import kotlin.math.roundToInt
 import kotlin.math.abs
 
 import android.net.Uri
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -198,6 +201,7 @@ import android.media.AudioManager
 import android.provider.OpenableColumns
 import android.os.Build
 import android.util.Base64
+import androidx.core.content.ContextCompat
 import org.hiylo.opencode.logging.AppLogger as Log
 import android.view.MotionEvent
 import android.webkit.WebView
@@ -213,6 +217,7 @@ import org.hiylo.opencode.ui.components.AppLoadingEdge
 import org.hiylo.opencode.ui.components.AppPickerItemShape
 import org.hiylo.opencode.ui.components.AppPrimaryButton
 import org.hiylo.opencode.ui.components.AppSecondaryButton
+import org.hiylo.opencode.ml.MnnAsr
 import org.hiylo.opencode.ui.components.appAmoledBorder
 import org.hiylo.opencode.ui.components.appSelectedItemColor
 import org.hiylo.opencode.ui.components.appPopupBorder
@@ -229,6 +234,9 @@ import org.hiylo.opencode.ui.components.isAmoledTheme
 
 /** Chat font size setting: "small", "medium", "large". */
 val LocalChatFontSize = compositionLocalOf { "medium" }
+
+/** Chat line spacing multiplier (1.0–2.0). */
+val LocalChatLineHeight = compositionLocalOf { 1f }
 
 /** Whether code blocks use word wrap instead of horizontal scroll. */
 val LocalCodeWordWrap = compositionLocalOf { false }
@@ -346,7 +354,8 @@ private fun Modifier.codeHorizontalScroll(): Modifier {
 private data class SlashCommand(
     val name: String,
     val description: String?,
-    val type: String // "server" or "client"
+    val type: String, // "server", "client", or "custom"
+    val prompt: String? = null, // for "custom" commands: text inserted into the input
 )
 
 private enum class ChatInputMode {
@@ -478,6 +487,31 @@ private fun BreathingCircleIndicator(
                 .background(color, CircleShape)
         )
     }
+}
+
+/** Blinking typing cursor — a small dot that blinks while the assistant is generating a reply. */
+@Composable
+private fun TypingCursorIndicator(
+    modifier: Modifier = Modifier,
+    size: Dp = 8.dp,
+    color: Color = MaterialTheme.colorScheme.primary,
+) {
+    val transition = rememberInfiniteTransition(label = "typing_cursor")
+    val alpha by transition.animateFloat(
+        initialValue = 1f,
+        targetValue = 0.15f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(500),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "typing_cursor_alpha"
+    )
+    Box(
+        modifier = modifier
+            .size(size)
+            .graphicsLayer { this.alpha = alpha }
+            .background(color, CircleShape)
+    )
 }
 
 /** Format a token count to a human-readable string (e.g., 1.2k, 45.3k, 1.2M). */
@@ -1063,6 +1097,17 @@ private suspend fun buildAttachmentFromUri(
     )
 }
 
+/**
+ * 在独立的重组作用域内监听软键盘可见性，仅在可见状态翻转时通过 [onChanged] 上报，
+ * 避免在 ChatScreen 根作用域直接读取 [WindowInsets.ime] 导致键盘动画期间全屏逐帧重组。
+ */
+@Composable
+private fun ImeVisibilityTracker(onChanged: (Boolean) -> Unit) {
+    val density = LocalDensity.current
+    val visible = WindowInsets.ime.getBottom(density) > 0
+    LaunchedEffect(visible) { onChanged(visible) }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(
@@ -1106,6 +1151,7 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     var showModelPicker by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
+    var showCustomCommandsDialog by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showAttachmentOptions by remember { mutableStateOf(false) }
     var showSubagentContextDetails by remember { mutableStateOf(false) }
@@ -1119,21 +1165,94 @@ fun ChatScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
+    val isListening by viewModel.isListening.collectAsState()
+    val speechError by viewModel.speechError.collectAsState()
+    val voiceLevel by viewModel.voiceLevel.collectAsState()
+    val voiceEnabled = remember { MnnAsr.modelDirectory(context) != null }
+
+    // Live partial ASR text replaces the previous partial; the final result appends.
+    var lastRecognizedPartial by remember { mutableStateOf("") }
+
+    // Fill recognized ASR text back into the input field and persist to the draft.
+    LaunchedEffect(Unit) {
+        viewModel.partialRecognizedText.collect { partial ->
+            val current = inputText.text
+            val base = if (lastRecognizedPartial.isNotEmpty() && current.endsWith(lastRecognizedPartial)) {
+                current.removeSuffix(lastRecognizedPartial).trimEnd()
+            } else {
+                current
+            }
+            lastRecognizedPartial = partial
+            val separator = if (base.isBlank() || base.endsWith(" ")) "" else " "
+            val merged = base + separator + partial
+            inputText = TextFieldValue(merged, TextRange(merged.length))
+            viewModel.updateDraftText(merged)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.recognizedText.collect { text ->
+            val current = inputText.text
+            val base = if (lastRecognizedPartial.isNotEmpty() && current.endsWith(lastRecognizedPartial)) {
+                current.removeSuffix(lastRecognizedPartial).trimEnd()
+            } else {
+                current
+            }
+            lastRecognizedPartial = ""
+            val separator = if (base.isBlank() || base.endsWith(" ")) "" else " "
+            val merged = base + separator + text
+            inputText = TextFieldValue(merged, TextRange(merged.length))
+            viewModel.updateDraftText(merged)
+        }
+    }
+
+    // Surface ASR errors as a snackbar, then clear the one-shot state.
+    LaunchedEffect(speechError) {
+        val messageRes = speechError ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(context.getString(messageRes))
+        viewModel.consumeSpeechError()
+    }
+
+    // Mic button: request RECORD_AUDIO on first use, then hold-to-talk.
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            viewModel.startListening()
+        } else {
+            coroutineScope.launch {
+                snackbarHostState.showSnackbar(context.getString(R.string.chat_voice_input_permission_denied))
+            }
+        }
+    }
+    val startVoiceInput = {
+        val granted = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            viewModel.startListening()
+        } else {
+            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
     val isAmoled = isAmoledTheme()
     val keyboardController = LocalSoftwareKeyboardController.current
     val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
     val view = LocalView.current
     val density = LocalDensity.current
-    val imeVisible = WindowInsets.ime.getBottom(density) > 0
+    var imeVisible by remember { mutableStateOf(false) }
+    ImeVisibilityTracker { imeVisible = it }
     val usesGestureNavigation = WindowInsets.systemGestures.getLeft(density, LayoutDirection.Ltr) > 0
     var terminalOverlayHeightPx by remember { mutableStateOf(0) }
 
     // @ file mention state
     val fileSearchResults by viewModel.fileSearchResults.collectAsState()
     val confirmedFilePaths by viewModel.confirmedFilePaths.collectAsState()
+    val customCommands by viewModel.customCommands.collectAsState()
 
     // Settings
     val chatFontSize by viewModel.chatFontSize.collectAsState()
+    val chatLineHeight by viewModel.chatLineHeight.collectAsState()
     val codeWordWrap by viewModel.codeWordWrap.collectAsState()
     val confirmBeforeSend by viewModel.confirmBeforeSend.collectAsState()
     val compactMessages by viewModel.compactMessages.collectAsState()
@@ -1617,6 +1736,11 @@ fun ChatScreen(
     // Disabled when user manually scrolls up; re-enabled when user scrolls back to bottom.
     var autoScrollEnabled by remember { mutableStateOf(true) }
 
+    // 未读新消息：用户上滑离开底部后又有新消息（messageCount 增加）时为 true，
+    // 点击回底部或滚动到底后清除，用于回底部按钮的小红点。
+    var hasUnreadMessages by remember { mutableStateOf(false) }
+    var lastSeenMessageCount by remember { mutableStateOf(0) }
+
     // True when the very bottom of the list is visible (accounting for offset within tall items)
     val isAtBottom by remember {
         derivedStateOf {
@@ -1639,6 +1763,7 @@ fun ChatScreen(
         } else if (isAtBottom) {
             // User stopped scrolling and ended up at the bottom — re-enable
             autoScrollEnabled = true
+            hasUnreadMessages = false
         }
     }
 
@@ -1663,7 +1788,15 @@ fun ChatScreen(
     val pendingInteractions = uiState.pendingInteractions
     val pendingCount = pendingInteractions.size
     val isBusy = isWorkingSessionStatus(uiState.sessionStatus)
-    LaunchedEffect(messageCount, lastPartCount, lastContentLength, pendingCount, isBusy) {
+    LaunchedEffect(messageCount, lastPartCount, lastContentLength, pendingCount, isBusy, imeVisible) {
+        if (messageCount > lastSeenMessageCount) {
+            if (!autoScrollEnabled && !isAtBottom) {
+                hasUnreadMessages = true
+            }
+            lastSeenMessageCount = messageCount
+        } else if (messageCount < lastSeenMessageCount) {
+            lastSeenMessageCount = messageCount
+        }
         if (messageCount > 0 && autoScrollEnabled) {
             val lastIndex = listState.layoutInfo.totalItemsCount.coerceAtLeast(1) - 1
             listState.scrollToItem(lastIndex)
@@ -1681,6 +1814,7 @@ fun ChatScreen(
 
     CompositionLocalProvider(
         LocalChatFontSize provides chatFontSize,
+        LocalChatLineHeight provides chatLineHeight,
         LocalCodeWordWrap provides codeWordWrap,
         LocalCompactMessages provides compactMessages,
         LocalCollapseTools provides collapseTools,
@@ -1694,6 +1828,7 @@ fun ChatScreen(
         LocalImageSaveRequest provides requestSaveImage,
     ) {
     Scaffold(
+        modifier = Modifier.imePadding(),
         containerColor = MaterialTheme.colorScheme.surface,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
@@ -2006,6 +2141,42 @@ fun ChatScreen(
                                     Icon(Icons.Default.FileDownload, contentDescription = null)
                                 }
                             )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.menu_export_markdown)) },
+                                onClick = {
+                                    showMenu = false
+                                    val content = SessionExport.toMarkdown(uiState.sessionTitle, uiState.messages)
+                                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/markdown"
+                                        putExtra(Intent.EXTRA_SUBJECT, uiState.sessionTitle)
+                                        putExtra(Intent.EXTRA_TEXT, content)
+                                    }
+                                    context.startActivity(
+                                        Intent.createChooser(shareIntent, context.getString(R.string.menu_export_markdown))
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Description, contentDescription = null)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.menu_export_json)) },
+                                onClick = {
+                                    showMenu = false
+                                    val content = SessionExport.toJson(uiState.sessionTitle, uiState.messages)
+                                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "application/json"
+                                        putExtra(Intent.EXTRA_SUBJECT, uiState.sessionTitle)
+                                        putExtra(Intent.EXTRA_TEXT, content)
+                                    }
+                                    context.startActivity(
+                                        Intent.createChooser(shareIntent, context.getString(R.string.menu_export_json))
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.DataObject, contentDescription = null)
+                                }
+                            )
                         }
                     }
                 },
@@ -2115,10 +2286,18 @@ fun ChatScreen(
                         }
                         // Build prompt parts: split text around confirmed @file mentions
                         val allParts = buildPromptParts(rawText, confirmedFilePaths, viewModel.getSessionDirectory())
-                        // Add image attachments
+                        // Image attachments require vision support from the selected model.
+                        val hasImageAttachments = attachments.any { it.isImage }
+                        if (hasImageAttachments && !uiState.modelSupportsVision) {
+                            coroutineScope.launch {
+                                snackbarHostState.showSnackbar(context.getString(R.string.chat_model_vision_unsupported))
+                            }
+                            return@doSend
+                        }
+                        // Add attachments: images become image parts, everything else stays a file part.
                         val attachmentParts = attachments.map { att ->
                             PromptPart(
-                                type = "file",
+                                type = if (att.isImage) "image" else "file",
                                 mime = att.mime,
                                 url = att.dataUrl,
                                 filename = att.filename
@@ -2155,6 +2334,12 @@ fun ChatScreen(
                 messages = uiState.messages,
                 attachments = attachments,
                 onAttach = { showAttachmentOptions = true },
+                isListening = isListening,
+                voiceLevel = voiceLevel,
+                onMicPress = { startVoiceInput() },
+                onMicRelease = { viewModel.stopListening() },
+                onMicCancel = { viewModel.cancelListening() },
+                voiceEnabled = voiceEnabled,
                 onRemoveAttachment = { index ->
                     if (index in attachments.indices) {
                         attachments.removeAt(index)
@@ -2174,6 +2359,8 @@ fun ChatScreen(
                 selectedVariant = uiState.selectedVariant,
                 onVariantSelect = { viewModel.selectVariant(it) },
                 commands = uiState.commands,
+                customCommands = customCommands,
+                onManageCustomCommands = { showCustomCommandsDialog = true },
                 fileSearchResults = fileSearchResults,
                 confirmedFilePaths = confirmedFilePaths,
                 onFileSelected = { path ->
@@ -2284,12 +2471,17 @@ fun ChatScreen(
                             }
                         }
                         else -> {
-                            // Server command — execute via API
-                            viewModel.executeCommand(cmd.name) { ok ->
-                                coroutineScope.launch {
-                                    snackbarHostState.showSnackbar(
-                                        if (ok) context.getString(R.string.chat_command_executed, cmd.name) else context.getString(R.string.chat_command_failed, cmd.name)
-                                    )
+                            if (cmd.type == "custom" && !cmd.prompt.isNullOrBlank()) {
+                                inputText = TextFieldValue(cmd.prompt, TextRange(cmd.prompt.length))
+                                viewModel.updateDraftText(cmd.prompt)
+                            } else {
+                                // Server command — execute via API
+                                viewModel.executeCommand(cmd.name) { ok ->
+                                    coroutineScope.launch {
+                                        snackbarHostState.showSnackbar(
+                                            if (ok) context.getString(R.string.chat_command_executed, cmd.name) else context.getString(R.string.chat_command_failed, cmd.name)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -2788,6 +2980,26 @@ fun ChatScreen(
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
                         )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = stringResource(R.string.chat_empty_quick_start),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
+                        val quickPrompts = listOf(
+                            stringResource(R.string.chat_empty_prompt_1),
+                            stringResource(R.string.chat_empty_prompt_2),
+                            stringResource(R.string.chat_empty_prompt_3),
+                        )
+                        quickPrompts.forEach { prompt ->
+                            SuggestionChip(
+                                onClick = {
+                                    inputText = TextFieldValue(prompt, TextRange(prompt.length))
+                                    viewModel.updateDraftText(prompt)
+                                },
+                                label = { Text(prompt) },
+                            )
+                        }
                         if (uiState.hasOlderMessages) {
                             AppPrimaryButton(
                                 onClick = { viewModel.loadOlderMessages() },
@@ -2800,7 +3012,7 @@ fun ChatScreen(
                 }
                 else -> {
                     val messageSpacing = if (LocalCompactMessages.current) 4.dp else 12.dp
-                    val chatTurns = remember(uiState.messages) { groupChatTurns(uiState.messages) }
+                    val timeline = remember(uiState.messages) { buildChatTimeline(uiState.messages) }
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
@@ -2842,9 +3054,13 @@ fun ChatScreen(
                         }
 
                         items(
-                            chatTurns,
+                            timeline,
                             key = { it.key },
-                        ) { chatTurn ->
+                        ) { entry ->
+                            when (entry) {
+                                is ChatTimelineEntry.DateDivider -> DateDividerRow(entry.dayStartMillis)
+                                is ChatTimelineEntry.Turn -> {
+                            val chatTurn = entry.turn
                             val chatMessage = chatTurn.messages.first()
                             // Detect compaction trigger messages (user messages with Part.Compaction)
                             val isCompactionTrigger = chatMessage.isUser &&
@@ -2956,7 +3172,12 @@ fun ChatScreen(
                                 onSummarize = if (chatMessage.isAssistant) {
                                     { viewModel.summarizeMessage(chatMessage.message.id) }
                                 } else null,
+                                onQuoteReply = {
+                                    viewModel.quoteMessage(chatMessage.message.id)
+                                },
                             )
+                            }
+                                }
                             }
                         }
 
@@ -3029,6 +3250,17 @@ fun ChatScreen(
                             }
                         }
 
+                        // Blinking typing cursor while the assistant is generating a reply.
+                        if (isBusy && uiState.messages.isNotEmpty()) {
+                            item(key = "typing_cursor") {
+                                TypingCursorIndicator(
+                                    modifier = Modifier.padding(start = 16.dp, top = 2.dp, bottom = 2.dp),
+                                    size = 8.dp,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+
                         // A stable final item lets scrollToItem clamp to the true content bottom,
                         // including spacing and padding below a tall or streaming message.
                         item(key = "conversation_bottom") {
@@ -3044,6 +3276,7 @@ fun ChatScreen(
                                     val lastIndex = listState.layoutInfo.totalItemsCount.coerceAtLeast(1) - 1
                                     listState.scrollToItem(lastIndex)
                                     autoScrollEnabled = true
+                                    hasUnreadMessages = false
                                 }
                             },
                             modifier = Modifier
@@ -3052,11 +3285,25 @@ fun ChatScreen(
                             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                             contentColor = MaterialTheme.colorScheme.onSurface
                         ) {
-                            Icon(
-                                Icons.Default.KeyboardArrowDown,
-                                contentDescription = stringResource(R.string.chat_scroll_bottom),
-                                modifier = Modifier.size(20.dp)
-                            )
+                            Box {
+                                Icon(
+                                    Icons.Default.KeyboardArrowDown,
+                                    contentDescription = stringResource(
+                                        if (hasUnreadMessages) R.string.chat_unread_messages
+                                        else R.string.chat_scroll_bottom
+                                    ),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                if (hasUnreadMessages) {
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(MaterialTheme.colorScheme.error)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -3208,6 +3455,15 @@ fun ChatScreen(
             usage = uiState.contextUsage,
             contextWindow = uiState.contextWindow,
             onDismiss = { showSubagentContextDetails = false },
+        )
+    }
+
+    if (showCustomCommandsDialog) {
+        CustomCommandsDialog(
+            commands = customCommands,
+            onAdd = { name, prompt -> viewModel.addCustomCommand(name, prompt) },
+            onRemove = { name -> viewModel.removeCustomCommand(name) },
+            onDismiss = { showCustomCommandsDialog = false },
         )
     }
 
@@ -4780,6 +5036,7 @@ private fun ChatMessageBubble(
     onRegenerate: (() -> Unit)? = null,
     onEdit: (() -> Unit)? = null,
     onSummarize: (() -> Unit)? = null,
+    onQuoteReply: (() -> Unit)? = null,
     onNavigateToChildSession: (String) -> Unit = {},
 ) {
     val chatMessage = chatMessages.last()
@@ -5059,17 +5316,63 @@ private fun ChatMessageBubble(
                         onRegenerate = onRegenerate,
                         onEdit = onEdit,
                         onSummarize = onSummarize,
+                        onQuoteReply = onQuoteReply,
                     )
                 }
             }
         }
     }
 
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = alignment
+    var longPressMenuExpanded by remember { mutableStateOf(false) }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = {},
+                onLongClick = {
+                    performHaptic(hapticView, hapticOn)
+                    longPressMenuExpanded = true
+                },
+            ),
     ) {
-        bubbleContent(Modifier)
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = alignment
+        ) {
+            bubbleContent(Modifier)
+        }
+        DropdownMenu(
+            expanded = longPressMenuExpanded,
+            onDismissRequest = { longPressMenuExpanded = false },
+        ) {
+            if (onCopyText != null) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.chat_copy)) },
+                    onClick = {
+                        longPressMenuExpanded = false
+                        onCopyText()
+                    },
+                )
+            }
+            if (isUser && onEdit != null) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.chat_edit_resend)) },
+                    onClick = {
+                        longPressMenuExpanded = false
+                        onEdit()
+                    },
+                )
+            }
+            if (onQuoteReply != null) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.chat_quote_reply)) },
+                    onClick = {
+                        longPressMenuExpanded = false
+                        onQuoteReply()
+                    },
+                )
+            }
+        }
     }
 }
 
@@ -5083,6 +5386,7 @@ private fun MessageMetadataRow(
     onRegenerate: (() -> Unit)?,
     onEdit: (() -> Unit)?,
     onSummarize: (() -> Unit)?,
+    onQuoteReply: (() -> Unit)? = null,
 ) {
     val hapticView = LocalView.current
     val hapticOn = LocalHapticFeedbackEnabled.current
@@ -5222,8 +5526,87 @@ private fun MessageMetadataRow(
                         },
                     )
                 }
+                if (onQuoteReply != null) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.chat_quote_reply)) },
+                        onClick = {
+                            menuExpanded = false
+                            onQuoteReply()
+                        },
+                    )
+                }
             }
         }
+    }
+}
+
+private sealed interface ChatTimelineEntry {
+    val key: String
+
+    data class DateDivider(val dayStartMillis: Long) : ChatTimelineEntry {
+        override val key: String get() = "day_$dayStartMillis"
+    }
+
+    data class Turn(val turn: ChatTurn) : ChatTimelineEntry {
+        override val key: String get() = turn.key
+    }
+}
+
+private fun dayStartEpochMillis(created: Long): Long {
+    val millis = if (created < 10_000_000_000L) created * 1000 else created
+    val zone = java.time.ZoneId.systemDefault()
+    val day = java.time.Instant.ofEpochMilli(millis).atZone(zone).toLocalDate()
+    return day.atStartOfDay(zone).toInstant().toEpochMilli()
+}
+
+private fun buildChatTimeline(messages: List<ChatMessage>): List<ChatTimelineEntry> {
+    val turns = groupChatTurns(messages)
+    val entries = mutableListOf<ChatTimelineEntry>()
+    var lastDay: Long? = null
+    turns.forEach { turn ->
+        val created = turn.messages.first().message.time.created
+        val dayStart = dayStartEpochMillis(created)
+        if (lastDay == null || dayStart != lastDay) {
+            entries += ChatTimelineEntry.DateDivider(dayStart)
+            lastDay = dayStart
+        }
+        entries += ChatTimelineEntry.Turn(turn)
+    }
+    return entries
+}
+
+@Composable
+private fun DateDividerRow(dayStartMillis: Long) {
+    val context = LocalContext.current
+    val zone = java.time.ZoneId.systemDefault()
+    val day = java.time.Instant.ofEpochMilli(dayStartMillis).atZone(zone).toLocalDate()
+    val today = java.time.LocalDate.now(zone)
+    val label = when (day) {
+        today -> context.getString(R.string.chat_today)
+        today.minusDays(1) -> context.getString(R.string.chat_yesterday)
+        else -> context.getString(R.string.chat_earlier)
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp, horizontal = 32.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        HorizontalDivider(
+            modifier = Modifier.weight(1f),
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        HorizontalDivider(
+            modifier = Modifier.weight(1f),
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+        )
     }
 }
 
@@ -5496,15 +5879,16 @@ private fun MarkdownContent(
 
     // Font size from settings: small=13sp, medium=14sp (default), large=16sp
     val fontSizeSetting = LocalChatFontSize.current
+    val lineHeightMultiplier = LocalChatLineHeight.current
     val (bodyFontSize, bodyLineHeight) = when (fontSizeSetting) {
-        "small" -> 13.sp to 18.sp
-        "large" -> 16.sp to 26.sp
-        else -> 14.sp to 22.sp // medium
+        "small" -> 13.sp to 18.sp * lineHeightMultiplier
+        "large" -> 16.sp to 26.sp * lineHeightMultiplier
+        else -> 14.sp to 22.sp * lineHeightMultiplier // medium
     }
     val (codeFontSize, codeLineHeight) = when (fontSizeSetting) {
-        "small" -> 11.sp to 16.sp
-        "large" -> 15.sp to 22.sp
-        else -> 13.sp to 20.sp // medium
+        "small" -> 11.sp to 16.sp * lineHeightMultiplier
+        "large" -> 15.sp to 22.sp * lineHeightMultiplier
+        else -> 13.sp to 20.sp * lineHeightMultiplier // medium
     }
 
     // Balanced text style with better line-height for readability
@@ -7235,6 +7619,46 @@ private fun TaskToolCard(
         is ToolState.Pending -> null
     }?.takeIf { it.isNotBlank() }
 
+    // Timeline status + duration
+    val statusLabel: String
+    val statusColor: Color
+    val baseDurationText: String?
+    when (val s = tool.state) {
+        is ToolState.Running -> {
+            statusLabel = stringResource(R.string.subagent_status_running)
+            statusColor = MaterialTheme.colorScheme.tertiary
+            baseDurationText = s.time?.start?.let { start ->
+                formatDurationText((System.currentTimeMillis() - start).coerceAtLeast(0))
+            }
+        }
+        is ToolState.Completed -> {
+            statusLabel = stringResource(R.string.subagent_status_completed)
+            statusColor = MaterialTheme.colorScheme.primary
+            baseDurationText = s.time?.let { formatDurationText((it.end - it.start).coerceAtLeast(0)) }
+        }
+        is ToolState.Error -> {
+            statusLabel = stringResource(R.string.subagent_status_failed)
+            statusColor = MaterialTheme.colorScheme.error
+            baseDurationText = s.time?.let { formatDurationText((it.end - it.start).coerceAtLeast(0)) }
+        }
+        is ToolState.Pending -> {
+            statusLabel = stringResource(R.string.subagent_status_pending)
+            statusColor = MaterialTheme.colorScheme.onSurfaceVariant
+            baseDurationText = null
+        }
+    }
+    var runningTicks by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(isRunning) {
+        while (isRunning) {
+            delay(1_000)
+            runningTicks = System.currentTimeMillis()
+        }
+    }
+    val runningDurationText = (tool.state as? ToolState.Running)?.time?.start?.let { start ->
+        formatDurationText((runningTicks - start).coerceAtLeast(0))
+    }
+    val durationText = if (isRunning) runningDurationText else baseDurationText
+
     Surface(
         shape = RoundedCornerShape(8.dp),
         color = if (isAmoled) Color.Black else MaterialTheme.colorScheme.surface,
@@ -7267,26 +7691,51 @@ private fun TaskToolCard(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.AccountTree,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.primary
+                    // Timeline status dot
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(statusColor),
                     )
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = subagentType ?: serverTitle ?: stringResource(R.string.tool_sub_agent),
+                            text = description ?: cleanSessionTitle(serverTitle) ?: subagentType
+                                ?: stringResource(R.string.tool_sub_agent),
                             style = MaterialTheme.typography.labelMedium,
-                            maxLines = 1
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
-                        if (description != null) {
+                        val secondaryLabel = if (description != null) {
+                            subagentType ?: cleanSessionTitle(serverTitle)
+                        } else {
+                            null
+                        }
+                        if (secondaryLabel != null) {
                             Text(
-                                text = description,
+                                text = secondaryLabel,
                                 style = CodeTypography.copy(fontSize = 11.sp),
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                overflow = TextOverflow.Ellipsis,
                             )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text(
+                                text = statusLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = statusColor,
+                            )
+                            if (durationText != null) {
+                                Text(
+                                    text = durationText,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                )
+                            }
                         }
                     }
                 }
@@ -7337,6 +7786,15 @@ private fun TaskToolCard(
         }
     }
 }
+/** Formats a millisecond duration as "1.2s" or "850ms" for sub-agent timeline display. */
+private fun formatDurationText(durationMs: Long): String {
+    return if (durationMs < 1000) {
+        "${durationMs}ms"
+    } else {
+        String.format(Locale.getDefault(), "%.1fs", durationMs / 1000.0)
+    }
+}
+
 @Composable
 private fun TodoListCard(tool: Part.Tool) {
     val isAmoled = isAmoledTheme()
@@ -7432,6 +7890,21 @@ private fun TodoListCard(tool: Part.Tool) {
                     )
                 }
             }
+
+            // Real-time progress bar (completed / total)
+            LinearProgressIndicator(
+                progress = { if (totalCount == 0) 0f else completedCount.toFloat() / totalCount },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp)
+                    .height(4.dp),
+                color = if (completedCount == totalCount) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.tertiary
+                },
+                trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+            )
 
             // Todo items
             AnimatedVisibility(visible = expanded) {
@@ -7940,6 +8413,24 @@ private fun PermissionCard(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+            if (permission.always.isNotEmpty()) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Lock,
+                        contentDescription = null,
+                        modifier = Modifier.size(12.dp),
+                        tint = contentColor.copy(alpha = 0.6f)
+                    )
+                    Text(
+                        text = stringResource(R.string.permission_always_scope, permission.always.joinToString(", ")),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = contentColor.copy(alpha = 0.7f)
+                    )
+                }
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -7974,6 +8465,108 @@ private fun PermissionCard(
                 ) {
                     Text(stringResource(R.string.permission_allow_always), maxLines = 1)
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CustomCommandsDialog(
+    commands: List<CustomSlashCommand>,
+    onAdd: (name: String, prompt: String) -> Boolean,
+    onRemove: (name: String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    var prompt by remember { mutableStateOf("") }
+    var showBlankError by remember { mutableStateOf(false) }
+
+    ChatDialog(onDismiss = onDismiss) {
+        Text(stringResource(R.string.custom_command_title), style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(12.dp))
+        if (commands.isEmpty()) {
+            Text(
+                text = stringResource(R.string.custom_command_empty),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Column(
+                modifier = Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                commands.forEach { cmd ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            text = "/${cmd.name}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Text(
+                            text = cmd.prompt,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        IconButton(onClick = { onRemove(cmd.name) }, modifier = Modifier.size(28.dp)) {
+                            Icon(
+                                Icons.Default.Delete,
+                                contentDescription = stringResource(R.string.custom_command_delete, cmd.name),
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it; showBlankError = false },
+            label = { Text(stringResource(R.string.custom_command_name_label)) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = prompt,
+            onValueChange = { prompt = it; showBlankError = false },
+            label = { Text(stringResource(R.string.custom_command_prompt_label)) },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 2,
+        )
+        if (showBlankError) {
+            Text(
+                text = stringResource(R.string.custom_command_add_failed),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        Spacer(Modifier.height(16.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            AppSecondaryButton(onClick = onDismiss) { Text(stringResource(R.string.close)) }
+            AppPrimaryButton(
+                onClick = {
+                    val added = onAdd(name, prompt)
+                    if (added) {
+                        name = ""
+                        prompt = ""
+                        showBlankError = false
+                    } else {
+                        showBlankError = true
+                    }
+                },
+                enabled = name.isNotBlank() && prompt.isNotBlank(),
+            ) {
+                Text(stringResource(R.string.custom_command_add))
             }
         }
     }
@@ -8220,6 +8813,64 @@ private fun RetryStatusBanner(retry: SessionStatus.Retry) {
     }
 }
 
+@Composable
+private fun VoiceListeningBanner(voiceLevel: Float) {
+    val isAmoled = isAmoledTheme()
+    val level = (voiceLevel / 10f).coerceIn(0f, 1f)
+    val bars = 16
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = if (isAmoled) Color.Black else MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Default.Mic,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp),
+            )
+            // Volume waveform
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                modifier = Modifier.weight(1f),
+            ) {
+                repeat(bars) { index ->
+                    val barLevel = if (level <= 0f) {
+                        0.15f
+                    } else {
+                        // Animate bars relative to the voice level with a slight falloff.
+                        val peak = 1f - (kotlin.math.abs(index - bars / 2).toFloat() / (bars / 2f)) * 0.6f
+                        (level * peak).coerceIn(0.12f, 1f)
+                    }
+                    Box(
+                        modifier = Modifier
+                            .width(3.dp)
+                            .height((6f + 22f * barLevel).dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.85f)),
+                    )
+                }
+            }
+            Text(
+                text = stringResource(R.string.chat_voice_input_listening),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ChatInputBar(
@@ -8233,6 +8884,12 @@ private fun ChatInputBar(
     messages: List<ChatMessage> = emptyList(),
     attachments: List<ImageAttachment> = emptyList(),
     onAttach: () -> Unit = {},
+    isListening: Boolean = false,
+    voiceLevel: Float = 0f,
+    onMicPress: () -> Unit = {},
+    onMicRelease: () -> Unit = {},
+    onMicCancel: () -> Unit = {},
+    voiceEnabled: Boolean = false,
     onRemoveAttachment: (Int) -> Unit = {},
     onSaveAttachment: (bytes: ByteArray, mime: String, filename: String?) -> Unit = { _, _, _ -> },
     modelLabel: String = "",
@@ -8245,6 +8902,8 @@ private fun ChatInputBar(
     selectedVariant: String? = null,
     onVariantSelect: (String?) -> Unit = {},
     commands: List<CommandInfo> = emptyList(),
+    customCommands: List<CustomSlashCommand> = emptyList(),
+    onManageCustomCommands: () -> Unit = {},
     fileSearchResults: List<String> = emptyList(),
     confirmedFilePaths: Set<String> = emptySet(),
     onFileSelected: (String) -> Unit = {},
@@ -8292,14 +8951,15 @@ private fun ChatInputBar(
     var previewAttachmentIndex by remember { mutableStateOf(-1) }
     var showVariantMenu by remember { mutableStateOf(false) }
 
-    // Build merged slash commands: client commands + server commands (deduplicated)
+    // Build merged slash commands: client commands + custom commands + server commands (deduplicated)
     val clientCmds = clientCommands()
-    val allCommands = remember(commands, clientCmds) {
+    val allCommands = remember(commands, clientCmds, customCommands) {
         val clientNames = clientCmds.map { it.name }.toSet()
         val serverSlash = commands
             .filter { it.source != "skill" && it.name !in clientNames }
             .map { SlashCommand(it.name, it.description, "server") }
-        clientCmds + serverSlash
+        val customSlash = customCommands.map { SlashCommand(it.name, it.prompt, "custom", it.prompt) }
+        clientCmds + customSlash + serverSlash
     }
 
     // Slash command suggestions
@@ -8315,7 +8975,6 @@ private fun ChatInputBar(
         modifier = Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .imePadding()
     ) {
         // Thin divider
         HorizontalDivider(
@@ -8371,6 +9030,28 @@ private fun ChatInputBar(
                                 modifier = Modifier.weight(1f)
                             )
                         }
+                    }
+                }
+                item(key = "manage_custom_commands") {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = onManageCustomCommands)
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.tertiary
+                        )
+                        Text(
+                            text = stringResource(R.string.custom_command_manage),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                        )
                     }
                 }
             }
@@ -8865,10 +9546,20 @@ private fun ChatInputBar(
                 )
             }
 
+            // Voice input listening banner — shown while holding the mic button.
+            AnimatedVisibility(
+                visible = isListening,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut(),
+            ) {
+                VoiceListeningBanner(voiceLevel = voiceLevel)
+            }
+
             // Input row
             Row(
-                verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.height(IntrinsicSize.Max)
             ) {
                 // Text field — minimal style, no heavy outline
                 val mentionHighlightColor = MaterialTheme.colorScheme.primary
@@ -8963,11 +9654,70 @@ private fun ChatInputBar(
                     }
                 }
 
+                // Voice input button — hold to talk, release to fill, slide up to cancel.
+                // Only shown when the on-device ASR model has been downloaded in Settings.
+                if (!isShellMode && voiceEnabled) {
+                    var cancelThresholdPx by remember { mutableStateOf(0f) }
+                    val density = LocalDensity.current
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .pointerInput(Unit) {
+                                awaitEachGesture {
+                                    val down = awaitFirstDown()
+                                    down.consume()
+                                    onMicPress()
+                                    var cancelled = false
+                                    while (true) {
+                                        val event = awaitPointerEvent()
+                                        val change = event.changes.firstOrNull { it.id == down.id }
+                                        if (change == null) break
+                                        if (!change.pressed) {
+                                            if (cancelled) onMicCancel() else onMicRelease()
+                                            change.consume()
+                                            break
+                                        }
+                                        // Slide-up cancel: finger moves significantly above the button.
+                                        if (change.position.y < -cancelThresholdPx) {
+                                            cancelled = true
+                                        } else {
+                                            change.consume()
+                                        }
+                                    }
+                                }
+                            }
+                            .background(
+                                color = if (isListening) {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                                } else {
+                                    Color.Transparent
+                                },
+                                shape = RoundedCornerShape(22.dp),
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        cancelThresholdPx = with(density) { 44.dp.toPx() }
+                        Icon(
+                            imageVector = if (isListening) Icons.Default.MicOff else Icons.Default.Mic,
+                            contentDescription = stringResource(
+                                if (isListening) R.string.chat_voice_input_stop else R.string.chat_voice_input
+                            ),
+                            modifier = Modifier.size(22.dp),
+                            tint = if (isListening) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f)
+                            },
+                        )
+                    }
+                }
+
                 // Send button — tap to send, long-press toggles shell mode
                 Box(
                     modifier = Modifier
-                        .size(48.dp)
-                        .clip(RoundedCornerShape(24.dp))
+                        .fillMaxHeight()
+                        .aspectRatio(1f)
+                        .clip(RoundedCornerShape(22.dp))
                         .background(
                             if (action == ComposerAction.STOP) {
                                 if (isAmoled) Color.Transparent else MaterialTheme.colorScheme.errorContainer
@@ -8986,13 +9736,13 @@ private fun ChatInputBar(
                                 Modifier.border(
                                     width = 1.2.dp,
                                     color = MaterialTheme.colorScheme.error.copy(alpha = 0.88f),
-                                    shape = RoundedCornerShape(24.dp),
+                                    shape = RoundedCornerShape(22.dp),
                                 )
                             } else if (isShellMode && !isSending) {
                                 Modifier.border(
                                     width = if (isAmoled) 1.2.dp else 1.dp,
                                     color = MaterialTheme.colorScheme.primary.copy(alpha = if (isAmoled) 0.88f else 0.75f),
-                                    shape = RoundedCornerShape(24.dp),
+                                    shape = RoundedCornerShape(22.dp),
                                 )
                             } else {
                                 Modifier
@@ -9016,14 +9766,14 @@ private fun ChatInputBar(
                 ) {
                     if (isSending) {
                         BreathingCircleIndicator(
-                            size = 20.dp,
+                            size = 14.dp,
                             color = MaterialTheme.colorScheme.primary
                         )
                     } else if (action == ComposerAction.STOP) {
                         Icon(
                             Icons.Default.Stop,
                             contentDescription = stringResource(R.string.chat_stop),
-                            modifier = Modifier.size(20.dp),
+                            modifier = Modifier.size(14.dp),
                             tint = if (isAmoled) {
                                 MaterialTheme.colorScheme.error.copy(alpha = 0.88f)
                             } else {
@@ -9038,7 +9788,7 @@ private fun ChatInputBar(
                             } else {
                                 stringResource(R.string.chat_send)
                             },
-                            modifier = Modifier.size(20.dp),
+                            modifier = Modifier.size(18.dp),
                             tint = if (canSend) {
                                 MaterialTheme.colorScheme.primary
                             } else if (isShellMode && isAmoled && !isSending) {
@@ -9511,4 +10261,18 @@ private fun QuestionCard(
             }
         }
     }
+}
+
+/** 清理子会话/工具的服务器标题：去路径、去常见 agent 前缀与哈希后缀。 */
+private fun cleanSessionTitle(title: String?): String? {
+    if (title.isNullOrBlank()) return null
+    var t = title.trim()
+    val lastSlash = t.lastIndexOf('/')
+    if (lastSlash >= 0 && lastSlash < t.length - 1) {
+        t = t.substring(lastSlash + 1)
+    }
+    // 去掉 "agent-" / "subagent-" 之类前缀与形如 "-abc12345" 的哈希后缀。
+    t = t.replace(Regex("^(agent|subagent|sub_agent)[-_]", RegexOption.IGNORE_CASE), "")
+    t = t.replace(Regex("[-_][0-9a-f]{6,32}$", RegexOption.IGNORE_CASE), "")
+    return t.ifBlank { null }
 }

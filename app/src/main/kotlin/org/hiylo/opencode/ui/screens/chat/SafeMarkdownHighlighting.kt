@@ -10,23 +10,33 @@
 package org.hiylo.opencode.ui.screens.chat
 
 import android.widget.Toast
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -57,6 +67,9 @@ import dev.snipme.highlights.model.SyntaxLanguage
 import org.intellij.markdown.ast.ASTNode
 
 private const val TAG = "SafeMarkdownHighlight"
+
+/** 代码块折叠阈值：超过该行数时默认折叠，用户可点击展开。 */
+private const val CODE_FOLD_LINE_THRESHOLD = 14
 
 internal val safeHighlightedCodeFence: MarkdownComponent = {
     SafeMarkdownHighlightedCodeFence(it.content, it.node)
@@ -111,13 +124,22 @@ private fun SafeMarkdownHighlightedCode(
     val codeBlockPadding = LocalMarkdownPadding.current.codeBlock
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
+    val codeTextColor = LocalMarkdownColors.current.codeText
     val codeScrollModifier = if (LocalCodeWordWrap.current) {
         Modifier
     } else {
         Modifier.horizontalScroll(rememberScrollState())
     }
-    val annotatedCode = remember(code, language, highlights) {
-        buildSafeHighlightedAnnotatedString(code, language, highlights)
+
+    val needsFold = code.lines().size > CODE_FOLD_LINE_THRESHOLD
+    var expanded by remember(code) { mutableStateOf(false) }
+    val displayCode = if (needsFold && !expanded) {
+        code.lines().take(CODE_FOLD_LINE_THRESHOLD).joinToString("\n")
+    } else {
+        code
+    }
+    val annotatedCode = remember(displayCode, language, highlights) {
+        buildSafeHighlightedAnnotatedString(displayCode, language, highlights)
     }
 
     MarkdownCodeBackground(
@@ -128,17 +150,42 @@ private fun SafeMarkdownHighlightedCode(
             .padding(vertical = 8.dp),
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            MarkdownBasicText(
-                annotatedCode,
-                color = LocalMarkdownColors.current.codeText,
-                modifier = codeScrollModifier
-                    .padding(codeBlockPadding),
-                style = style,
-            )
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (!language.isNullOrBlank()) {
+                    Text(
+                        text = language.lowercase(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = codeTextColor.copy(alpha = 0.6f),
+                    )
+                }
+                Spacer(modifier = Modifier.weight(1f))
+                if (needsFold) {
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable { expanded = !expanded }
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                            tint = codeTextColor.copy(alpha = 0.6f),
+                        )
+                        Spacer(modifier = Modifier.size(2.dp))
+                        Text(
+                            text = stringResource(if (expanded) R.string.chat_code_collapse else R.string.chat_code_expand),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = codeTextColor.copy(alpha = 0.7f),
+                        )
+                    }
+                }
                 IconButton(
                     onClick = {
                         clipboard.setText(AnnotatedString(code))
@@ -152,10 +199,17 @@ private fun SafeMarkdownHighlightedCode(
                         imageVector = Icons.Default.ContentCopy,
                         contentDescription = stringResource(R.string.chat_copy),
                         modifier = Modifier.size(14.dp),
-                        tint = LocalMarkdownColors.current.codeText.copy(alpha = 0.42f),
+                        tint = codeTextColor.copy(alpha = 0.42f),
                     )
                 }
             }
+            MarkdownBasicText(
+                annotatedCode,
+                color = codeTextColor,
+                modifier = codeScrollModifier
+                    .padding(codeBlockPadding),
+                style = style,
+            )
         }
     }
 }

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="chat_quote_reply">引用回复</string>
+    <string name="chat_edit_resend">编辑重发</string>
+    <string name="chat_today">今天</string>
+    <string name="chat_yesterday">昨天</string>
+    <string name="chat_earlier">更早</string>
+    <string name="chat_code_expand">展开</string>
+    <string name="chat_code_collapse">折叠</string>
+    <string name="chat_empty_quick_start">快速开始</string>
+    <string name="chat_empty_prompt_1">帮我实现一个新功能</string>
+    <string name="chat_empty_prompt_2">审查最近的改动</string>
+    <string name="chat_empty_prompt_3">解释这段代码</string>
+</resources>
