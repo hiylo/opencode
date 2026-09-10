@@ -271,6 +271,7 @@ fun SessionListScreen(
     val uiState by viewModel.uiState.collectAsState()
     val groupByProject by viewModel.groupSessionsByProject.collectAsState()
     val recentDirectoryCount by viewModel.recentDirectoryCount.collectAsState()
+    val compactSessions by viewModel.compactSessions.collectAsState()
     val isAmoled = isAmoledTheme()
     // Navigate to newly created session
     LaunchedEffect(viewModel) {
@@ -796,7 +797,7 @@ fun SessionListScreen(
                         modifier = Modifier.fillMaxSize(),
                         state = sessionListState,
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalArrangement = Arrangement.spacedBy(if (compactSessions) 6.dp else 10.dp)
                     ) {
                         if (recentProjectsForDisplay.isNotEmpty() && searchQuery.isBlank() && !uiState.isSelectionMode) {
                             item(key = "recent-projects") {
@@ -835,6 +836,7 @@ fun SessionListScreen(
                                 SessionRow(
                                     item = item,
                                     projectName = group.sessionDirLabels[item.session.id] ?: group.directory,
+                                    compact = compactSessions,
                                     isSelectionMode = uiState.isSelectionMode,
                                     isSelected = item.session.id in uiState.selectedIds,
                                     favoriteCount = allFavoritesCount,
@@ -903,6 +905,7 @@ fun SessionListScreen(
                                 SessionRow(
                                     item = item,
                                     projectName = dirLabel,
+                                    compact = compactSessions,
                                     isSelectionMode = uiState.isSelectionMode,
                                     isSelected = item.session.id in uiState.selectedIds,
                                     favoriteCount = allFavoritesCount,
@@ -2091,6 +2094,7 @@ private fun PinnedSortDialog(
 private fun SessionRow(
     item: SessionItem,
     projectName: String? = null,
+    compact: Boolean = false,
     isSelectionMode: Boolean,
     isSelected: Boolean,
     favoriteCount: Int,
@@ -2158,6 +2162,7 @@ private fun SessionRow(
                     category = item.category,
                     contextLabel = projectName.orEmpty(),
                     isPinned = item.isPinned,
+                    compact = compact,
                     leadingContent = {
                         AnimatedVisibility(
                             visible = isSelectionMode,

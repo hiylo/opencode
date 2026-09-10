@@ -70,6 +70,7 @@ fun SessionCardContent(
     contextDetail: String? = null,
     isPinned: Boolean = false,
     isOffline: Boolean = false,
+    compact: Boolean = false,
     leadingContent: @Composable () -> Unit = {},
     trailingContent: @Composable () -> Unit,
 ) {
@@ -132,7 +133,12 @@ fun SessionCardContent(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, top = 10.dp, bottom = 10.dp, end = 4.dp),
+                .padding(
+                    start = 16.dp,
+                    top = if (compact) 6.dp else 10.dp,
+                    bottom = if (compact) 6.dp else 10.dp,
+                    end = 4.dp,
+                ),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             leadingContent()
@@ -171,7 +177,7 @@ fun SessionCardContent(
                         )
                     }
                 }
-                Spacer(Modifier.height(2.dp))
+                Spacer(Modifier.height(if (compact) 1.dp else 2.dp))
             }
             Row(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -212,7 +218,7 @@ fun SessionCardContent(
                     SessionStatusBadge(label = statusBadge.first, color = statusBadge.second)
                 }
             }
-            Spacer(Modifier.height(2.dp))
+            Spacer(Modifier.height(if (compact) 1.dp else 2.dp))
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,

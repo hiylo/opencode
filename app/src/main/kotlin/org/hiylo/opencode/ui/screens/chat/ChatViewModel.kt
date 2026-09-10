@@ -809,7 +809,9 @@ class ChatViewModel @Inject constructor(
                 sessions += children
                 children.forEach { queue.addLast(it.id) }
             }
-            eventReducer.setSessions(serverId, sessions)
+            // 用 upsert 逐个合并当前会话及其子会话，避免用 setSessions（权威替换）
+            // 传入局部列表会把列表里其它项目的根会话全部清掉，导致返回会话列表时被清空。
+            sessions.forEach { eventReducer.upsertSession(serverId, it) }
             refreshGitRepositoryState()
         } catch (e: Exception) {
             e.rethrowCancellation()
@@ -1975,7 +1977,7 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val session = api.createSession(conn, directory = sessionDirectory)
-                eventReducer.setSessions(serverId, listOf(session))
+                eventReducer.upsertSession(serverId, session)
                 if (BuildConfig.DEBUG) Log.d(TAG, "Created new session: ${session.id}")
                 onResult(session)
             } catch (e: Exception) {

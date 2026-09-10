@@ -220,6 +220,13 @@ class SessionListViewModel @Inject constructor(
         20,
     )
 
+    /** 会话列表是否使用紧凑布局（复用聊天的「紧凑模式」开关）。 */
+    val compactSessions: StateFlow<Boolean> = settingsRepository.compactMessages.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        false,
+    )
+
     private val favoriteSessionIds: StateFlow<List<String>> = settingsRepository.favoriteSessionIds(serverId).stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
@@ -518,8 +525,9 @@ class SessionListViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val session = api.createSession(conn, directory = directory)
-                // The SSE stream should pick up the new session, but also add directly
-                eventReducer.setSessions(serverId, listOf(session))
+                // The SSE stream should pick up the new session, but also add directly.
+                // Use upsert (merge) so a single new session doesn't wipe the rest of the list.
+                eventReducer.upsertSession(serverId, session)
                 if (BuildConfig.DEBUG) Log.d(TAG, "Created new session: ${session.id}")
                 directory?.let { settingsRepository.recordRecentProject(serverId, it) }
                 _navigateToSession.tryEmit(session.id)
