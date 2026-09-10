@@ -88,7 +88,14 @@ object MnnAsr {
         return if (isModelPresent(dir)) dir else null
     }
 
-    /** 当前设备是否支持语音识别（需 arm64-v8a + JNI 库存在）。 */
+    /**
+     * 当前设备是否支持语音识别（需 arm64-v8a + JNI 库存在）。
+     *
+     * 注意：`libsherpa-mnn-jni.so` 依赖 `MNN::Express` 符号，其 DT_NEEDED 已由
+     * `patchelf --replace-needed libMNN.so libMNN_Express.so` 调整为指向本 App 的
+     * 拆分版 MNN 的 Express 库（该库又传递依赖 libMNN.so 与 libc++_shared.so），
+     * 因此这里直接加载 sherpa JNI 即可。
+     */
     fun isSupported(): Boolean {
         val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return false
         if (abi != "arm64-v8a") return false
