@@ -854,4 +854,27 @@ Tokens: ~%4$d -&gt; ~%5$d</string>
     <string name="file_cancel">Cancel</string>
     <string name="file_saved">File saved</string>
     <string name="file_save_failed">Failed to save file</string>
+
+    <!-- Backend tasks -->
+    <string name="tasks_title">Task Center</string>
+    <string name="tasks_prompt_hint">Instruction</string>
+    <string name="tasks_directory_hint">Directory (optional)</string>
+    <string name="tasks_batch">Batch</string>
+    <string name="tasks_submit">Submit</string>
+    <string name="tasks_filter_all">All</string>
+    <string name="tasks_empty">No tasks yet</string>
+    <string name="task_status_queued">Queued</string>
+    <string name="task_status_running">Running</string>
+    <string name="task_status_succeeded">Succeeded</string>
+    <string name="task_status_failed">Failed</string>
+    <string name="task_status_canceled">Canceled</string>
+    <string name="task_status_retrying">Retrying</string>
+    <string name="server_settings_tasks">Task Center</string>
+    <string name="server_settings_tasks_desc">Background tasks, batch runs, and archives via the backend</string>
+    <string name="server_settings_skills">Skills</string>
+    <string name="server_settings_skills_desc">Browse this server\'s available skills</string>
+    <string name="skills_title">Skills</string>
+    <string name="skills_empty">No skills</string>
+    <string name="skills_refresh">Refresh</string>
+    <string name="skills_retry">Retry</string>
 </resources>

@@ -818,4 +818,27 @@
     <string name="file_cancel">取消</string>
     <string name="file_saved">文件已保存</string>
     <string name="file_save_failed">文件保存失败</string>
+
+    <!-- Backend tasks -->
+    <string name="tasks_title">任务中心</string>
+    <string name="tasks_prompt_hint">指令</string>
+    <string name="tasks_directory_hint">目录（可选）</string>
+    <string name="tasks_batch">批量</string>
+    <string name="tasks_submit">提交</string>
+    <string name="tasks_filter_all">全部</string>
+    <string name="tasks_empty">暂无任务</string>
+    <string name="task_status_queued">排队中</string>
+    <string name="task_status_running">执行中</string>
+    <string name="task_status_succeeded">成功</string>
+    <string name="task_status_failed">失败</string>
+    <string name="task_status_canceled">已取消</string>
+    <string name="task_status_retrying">重试中</string>
+    <string name="server_settings_tasks">任务中心</string>
+    <string name="server_settings_tasks_desc">通过后端执行后台任务、批量与归档</string>
+    <string name="server_settings_skills">Skills</string>
+    <string name="server_settings_skills_desc">浏览该服务器可用的 Skills</string>
+    <string name="skills_title">Skills</string>
+    <string name="skills_empty">暂无 Skills</string>
+    <string name="skills_refresh">刷新</string>
+    <string name="skills_retry">重试</string>
 </resources>

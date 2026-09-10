@@ -52,6 +52,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
@@ -67,6 +68,11 @@ private const val MAX_REVERT_RECOVERY_PAGES = 20
 private const val MAX_CHILD_SESSIONS = 100
 private const val FAST_INITIAL_MESSAGE_COUNT = 10
 private const val BACKGROUND_MESSAGE_PAGE_COUNT = 25
+/** 高频流式状态（parts/messages）的节流采样间隔：SSE 流式每个 delta 都更新一次，
+ *  若直接喂给 uiState 的 28 路 combine 会导致每个 delta 全量重算 + 全量 recompose。 */
+private const val STREAM_THROTTLE_MS = 50L
+/** SSE 假死（心跳仍在但不再推消息）时，busy 期间通过 REST 拉取最新消息兜底的间隔。 */
+private const val BUSY_MESSAGE_POLL_MS = 10_000L
 
 internal fun fastInitialMessageLimit(configuredLimit: Int): Int =
     configuredLimit.coerceAtLeast(1).coerceAtMost(FAST_INITIAL_MESSAGE_COUNT)
@@ -459,10 +465,25 @@ class ChatViewModel @Inject constructor(
     /** Whether a "load older" request is in flight. */
     private val _isLoadingOlder = MutableStateFlow(false)
 
+    // 高频状态节流采样：SSE 流式输出时每个 delta 都会更新 parts/messages，
+    // 直接喂给 28 路 combine 会让每个 delta 都触发一次 O(N) 全量重算 + 全量 recompose，
+    // 大会话下导致流式「一块一块蹦」、会话状态刷新慢。这里每 ~STREAM_THROTTLE_MS 采样一次
+    // 最新值，把重算频率降到每 50ms 最多一次，流式依旧流畅。
+    // 用 MutableStateFlow 桥接（而非纯 flow），以便在「加载完成」等关键时点通过
+    // flushThrottledState() 立即同步，避免节流延迟导致瞬间出现「空会话」界面。
+    private val throttledMessages = MutableStateFlow<Map<String, List<Message>>>(emptyMap())
+    private val throttledParts = MutableStateFlow<Map<String, List<Part>>>(emptyMap())
+
+    /** 立即把节流状态同步到最新值（加载完成、会话切换等关键时点调用，避免空状态闪现）。 */
+    private fun flushThrottledState() {
+        throttledMessages.value = eventReducer.messages.value
+        throttledParts.value = eventReducer.parts.value
+    }
+
     val uiState: StateFlow<ChatUiState> = combine(
         eventReducer.sessions,
-        eventReducer.messages,
-        eventReducer.parts,
+        throttledMessages,
+        throttledParts,
         eventReducer.sessionStatuses,
         eventReducer.pendingInteractions,
         _isLoading,
@@ -685,6 +706,17 @@ class ChatViewModel @Inject constructor(
     init {
         eventReducer.confirmSession(sessionId)
         _pendingPrompts.value = pendingPromptRepository.getForSession(sessionId)
+        // 高频 parts/messages 的节流采样：每 ~STREAM_THROTTLE_MS 把最新值同步到节流状态，
+        // 供 uiState 的 combine 使用，降低流式输出时 combine 全量重算 + 全量 recompose 的频率。
+        viewModelScope.launch {
+            while (isActive) {
+                val m = eventReducer.messages.value
+                if (m != throttledMessages.value) throttledMessages.value = m
+                val p = eventReducer.parts.value
+                if (p != throttledParts.value) throttledParts.value = p
+                delay(STREAM_THROTTLE_MS)
+            }
+        }
         // Preload the on-device MNN model in the background so that tapping
         // "Generate suggestions" later starts inference immediately.
         viewModelScope.launch {
@@ -762,6 +794,9 @@ class ChatViewModel @Inject constructor(
 
     }
 
+    /** 上次通过 REST 拉取最新消息兜底的时间戳（节流，避免 SSE 假死时过于频繁地拉取）。 */
+    private var lastMessagePollAt = 0L
+
     private suspend fun reconcileActiveStatus() {
         val localStatus = eventReducer.sessionStatuses.value[sessionId]
         val hasRunningTool = eventReducer.messages.value[sessionId].orEmpty().any { message ->
@@ -769,13 +804,22 @@ class ChatViewModel @Inject constructor(
                 part is Part.Tool && part.state is ToolState.Running
             }
         }
-        if (localStatus !is SessionStatus.Busy && !hasRunningTool) return
+        val wasBusy = localStatus is SessionStatus.Busy || hasRunningTool
 
         try {
+            // 即使 localStatus 是 Idle 也探测远程状态：SSE 假死时会收不到 session.status 事件，
+            // localStatus 停留在假死前的 Idle；若不探测将永远无法发现「会话已经变 busy」。
             val remoteStatus = api.listSessionStatuses(conn, sessionDirectory)[sessionId] ?: SessionStatus.Idle
-            if (remoteStatus is SessionStatus.Idle && (localStatus !is SessionStatus.Idle || hasRunningTool)) {
+            val now = System.currentTimeMillis()
+            // busy 期间每 BUSY_MESSAGE_POLL_MS 拉一次最新消息兜底；busy→idle 转场时再拉一次，
+            // 捕获「服务端已输出完、但 App 因 SSE 假死没收到」的最终结果。
+            val shouldPollMessages =
+                (remoteStatus is SessionStatus.Busy && now - lastMessagePollAt >= BUSY_MESSAGE_POLL_MS) ||
+                    (remoteStatus is SessionStatus.Idle && wasBusy)
+            if (shouldPollMessages) {
                 val messages = api.listMessages(conn, sessionId, limit = 50, directory = sessionDirectory)
                 eventReducer.mergeMessages(sessionId, messages)
+                lastMessagePollAt = now
             }
             eventReducer.updateSessionStatus(sessionId, remoteStatus)
         } catch (e: Exception) {
@@ -846,6 +890,9 @@ class ChatViewModel @Inject constructor(
                     minimumAgeMs = 10_000L,
                 )
                 _hasOlderMessages.value = nextCursor != null
+                // 先同步节流状态再结束 loading，避免 combine 在「messages 已就绪但节流态未采样」
+                // 的窗口内重算出 messages 空 + isLoading=false 的空会话界面。
+                flushThrottledState()
                 _isLoading.value = false
                 if (BuildConfig.DEBUG) {
                     Log.d(
@@ -928,6 +975,7 @@ class ChatViewModel @Inject constructor(
                     _error.value = e.message ?: "Failed to load messages"
                 }
             } finally {
+                flushThrottledState()
                 _isLoading.value = false
                 _isLoadingOlder.value = false
             }

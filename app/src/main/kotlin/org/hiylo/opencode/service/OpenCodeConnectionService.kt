@@ -42,6 +42,7 @@ import org.hiylo.opencode.domain.model.Message
 import org.hiylo.opencode.domain.model.Part
 import org.hiylo.opencode.domain.model.ServerConfig
 import org.hiylo.opencode.domain.model.Session
+import org.hiylo.opencode.domain.model.SessionStatus
 import org.hiylo.opencode.domain.model.SseEvent
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session as JschSession
@@ -76,6 +77,12 @@ internal const val FAILED_CONNECTION_TIMEOUT_MS = 15 * 60 * 1000L
 private const val DISCONNECTED_SERVERS_PREFS = "explicitly_disconnected_servers"
 private const val DISCONNECTED_SERVERS_KEY = "disconnected_server_ids"
 private const val SSH_CONNECT_TIMEOUT_MS = 15_000
+/** SSE 假死检测阈值：连接建立后超过该时长未收到任何实质事件（消息/状态/step），判定假死。 */
+private const val SSE_STALL_TIMEOUT_MS = 30_000L
+/** SSE 假死检测的检查间隔。 */
+private const val SSE_STALL_CHECK_INTERVAL_MS = 15_000L
+/** 会话完成兜底轮询间隔：SSE 假死收不到 session.idle 时，靠轮询 /session/status 检测 busy→idle。 */
+private const val COMPLETION_POLL_INTERVAL_MS = 15_000L
 
 internal fun hasFailedConnectionTimedOut(failureStartedAt: Long, now: Long): Boolean {
     return now - failureStartedAt >= FAILED_CONNECTION_TIMEOUT_MS
@@ -261,6 +268,9 @@ class OpenCodeConnectionService : Service() {
     /** Dedup response-ready notifications per session by last assistant message ID. */
     private val lastNotifiedAssistantMessageBySession = ConcurrentHashMap<String, String>()
 
+    /** 上次轮询时各 server 处于 busy 的会话集合，用于检测 busy→idle 完成转场（SSE 假死兜底）。 */
+    private val lastBusySessions = ConcurrentHashMap<String, Set<String>>()
+
     inner class LocalBinder : Binder() {
         fun getService(): OpenCodeConnectionService = this@OpenCodeConnectionService
     }
@@ -310,6 +320,20 @@ class OpenCodeConnectionService : Service() {
         }
         serviceScope.launch {
             connectedServerIds.collect(serverConnectionStateRepository::updateConnectedServerIds)
+        }
+        // 周期性检测 SSE 假死（连接正常但长时间无实质事件，同时有会话 busy），并主动重连。
+        serviceScope.launch {
+            while (isActive) {
+                delay(SSE_STALL_CHECK_INTERVAL_MS)
+                detectAndRecoverStalledConnections()
+            }
+        }
+        // 会话完成兜底轮询：SSE 假死时靠轮询 /session/status 检测 busy→idle 并推送完成通知。
+        serviceScope.launch {
+            while (isActive) {
+                delay(COMPLETION_POLL_INTERVAL_MS)
+                pollSessionCompletions()
+            }
         }
     }
 
@@ -611,6 +635,9 @@ class OpenCodeConnectionService : Service() {
             val session = jsch.getSession(server.sshUsername, host, server.sshPort)
             session.setPassword(server.sshPassword ?: "")
             session.setConfig("StrictHostKeyChecking", "no")
+            // SSH 保活：防止会话因空闲/网络波动被中间设备掐断，降低隧道断连概率。
+            session.setServerAliveInterval(15_000)
+            session.setServerAliveCountMax(3)
             session.connect(SSH_CONNECT_TIMEOUT_MS)
             val localPort = session.setPortForwardingL(0, host, openCodePort)
             Log.i(TAG, "[${server.displayName}] SSH tunnel established: 127.0.0.1:$localPort -> $host:$openCodePort")
@@ -624,6 +651,17 @@ class OpenCodeConnectionService : Service() {
     /** 静默断开 SSH 会话。 */
     private fun closeSshSession(session: JschSession?) {
         try { session?.disconnect() } catch (_: Exception) { }
+    }
+
+    /** 用重建后的 SSH 隧道替换某 server 的连接信息（关闭旧会话）。 */
+    private fun replaceSshSession(serverId: String, newConn: ServerConnection, newSsh: JschSession?) {
+        val oldState = connections[serverId] ?: return
+        val oldSsh = oldState.sshSession
+        connections.compute(serverId) { _, state ->
+            if (state == null || state.sseJob !== oldState.sseJob) return@compute state
+            state.copy(conn = newConn, sshSession = newSsh)
+        }
+        closeSshSession(oldSsh)
     }
 
     // ============ WakeLock ============
@@ -685,6 +723,94 @@ class OpenCodeConnectionService : Service() {
         }
     }
 
+    /**
+     * 检测并恢复 SSE 假死。
+     *
+     * SSE 偶发会进入「假死」状态：TCP 连接仍在、服务端也持续发 server.heartbeat 心跳，
+     * 但不再推送消息/状态等实质事件。此时 `readUTF8Line` 因心跳而不会超时，重连逻辑不会被触发，
+     * 导致网页端已实时刷新、而 App 一直卡着。这里在「连接已建立 + 有会话 busy + 长时间无实质事件」
+     * 时主动重建连接。
+     */
+    private fun detectAndRecoverStalledConnections() {
+        val now = System.currentTimeMillis()
+        val statuses = eventReducer.sessionStatuses.value
+        val serverSessions = eventReducer.serverSessions.value
+        for ((serverId, state) in connections) {
+            if (!state.isConnected) continue
+            val lastHeartbeat = _serverMetrics.value[serverId]?.lastHeartbeatAt ?: continue
+            if (now - lastHeartbeat < SSE_STALL_TIMEOUT_MS) continue
+            // 该 server 下是否有 busy 会话；否则长时间无事件是正常的 idle，不应重连。
+            val hasBusySession = serverSessions[serverId].orEmpty().any { sessionId ->
+                statuses[sessionId] is SessionStatus.Busy
+            }
+            if (!hasBusySession) continue
+            Log.w(
+                TAG,
+                "[${state.config.displayName}] SSE stream stalled (no events for ${now - lastHeartbeat}ms) while a session is busy; forcing reconnect",
+            )
+            forceReconnect(serverId)
+        }
+    }
+
+    /** 强制重建某个 server 的 SSE 连接（用于假死恢复）。 */
+    private fun forceReconnect(serverId: String) {
+        val state = connections[serverId] ?: return
+        val job = startSseConnection(state.config, state.conn, preload = false)
+        val replacement = state.copy(sseJob = job, isConnected = false)
+        if (!connections.replace(serverId, state, replacement)) {
+            job.cancel()
+            return
+        }
+        state.sseJob.cancel()
+        reconciliationJobs.remove(serverId)?.cancel()
+        _connectedServerIds.update { it - serverId }
+        _connectingServerIds.update { it + serverId }
+        connectStartedAt[serverId] = SystemClock.elapsedRealtime()
+        _serverMetrics.update { it - serverId }
+        job.start()
+        updatePersistentNotification()
+    }
+
+    /**
+     * 会话完成兜底轮询。
+     *
+     * SSE 假死时会收不到 session.idle 事件，导致「会话完成」通知丢失。这里定期拉取
+     * /session/status（仅返回 busy/retry 会话），对比上一轮的 busy 集合，检测 busy→idle
+     * 转场；对完成会话先拉一次最新消息（补齐假死期间漏掉的内容），再复用 notifySessionComplete
+     * 推送通知。SSE 正常时该轮询因去重而不会重复推送。
+     */
+    private suspend fun pollSessionCompletions() {
+        for ((serverId, state) in connections) {
+            if (!state.isConnected) continue
+            val statuses = try {
+                api.listSessionStatuses(state.conn)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                continue
+            }
+            val currentBusy = statuses.filterValues { it is SessionStatus.Busy }.keys
+            val previous = lastBusySessions[serverId].orEmpty()
+            lastBusySessions[serverId] = currentBusy
+            // 仍在活动的会话 = busy + retry（/session/status 只返回这两类）；
+            // 上次 busy 但这次彻底不在 = 已 idle 完成，避免把 busy→retry 误判为完成。
+            val completed = previous - statuses.keys
+            for (sessionId in completed) {
+                if (isChildSession(sessionId)) continue
+                // 补齐假死期间漏掉的消息，否则 latestNotifiableAssistantMessageId 找不到最新 assistant 消息。
+                try {
+                    val messages = api.listMessages(state.conn, sessionId, limit = 50)
+                    eventReducer.mergeMessages(sessionId, messages)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "[${state.config.displayName}] Failed to fetch messages for completed session $sessionId: ${e.message}")
+                }
+                notifySessionComplete(state.config, sessionId)
+            }
+        }
+    }
+
     // ============ SSE Connection with Auto-Reconnect ============
 
     private fun startSseConnection(
@@ -697,6 +823,7 @@ class OpenCodeConnectionService : Service() {
             var attempt = 0
             var failureStartedAt: Long? = SystemClock.elapsedRealtime()
             var preloaded = !preload
+            var currentConn = conn
 
             while (isActive) {
                 failureStartedAt?.let { failedSince ->
@@ -714,11 +841,27 @@ class OpenCodeConnectionService : Service() {
                     Log.d(TAG, "[${server.displayName}] SSE connection attempt #$attempt")
                 }
 
+                // SSH 隧道断开后需重建：首次连接由 connectInternal 建好隧道；之后每次重连前
+                // 重建一次，避免隧道已断（SSH 会话超时/网络波动）却仍用失效的
+                // 127.0.0.1:localPort 反复 ECONNREFUSED 而永远连不上。
+                if (server.useSsh && attempt > 1) {
+                    try {
+                        val resolved = resolveConnection(server)
+                        val newConn = ServerConnection.from(resolved.baseUrl, server.username, server.password)
+                        replaceSshSession(server.id, newConn, resolved.sshSession)
+                        currentConn = newConn
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.w(TAG, "[${server.displayName}] Failed to re-establish SSH tunnel: ${e.message}")
+                    }
+                }
+
                 if (!preloaded) {
                     preloaded = true
                     // Pre-load once. Reconciliation refreshes state after a successful reconnect.
                     try {
-                        val sessions = api.listSessions(conn)
+                        val sessions = api.listSessions(currentConn)
                         eventReducer.setSessions(server.id, sessions)
                         Log.i(TAG, "[${server.displayName}] Pre-loaded ${sessions.size} sessions")
                     } catch (e: CancellationException) {
@@ -730,7 +873,7 @@ class OpenCodeConnectionService : Service() {
 
                 try {
                     sseClient.connectToGlobalEvents(
-                        conn = conn,
+                        conn = currentConn,
                         onOpen = {
                             if (connections[server.id]?.sseJob === currentJob) {
                                 updateServerConnected(server.id, true, currentJob)
@@ -976,35 +1119,9 @@ class OpenCodeConnectionService : Service() {
                     return
                 }
                 serviceScope.launch {
-                    if (!settingsRepository.notificationsEnabled.first()) {
-                        Log.i(TAG, "[${server.displayName}] Session idle but notifications disabled: ${event.sessionId}")
-                        return@launch
-                    }
-
                     // Give reducer a brief moment to receive trailing message/part events.
                     delay(250)
-                    if (!connections.containsKey(server.id)) {
-                        Log.i(TAG, "[${server.displayName}] Session idle but server disconnected, skip: ${event.sessionId}")
-                        return@launch
-                    }
-
-                    val assistantMessageId = latestNotifiableAssistantMessageId(event.sessionId)
-                    if (assistantMessageId == null) {
-                        Log.i(TAG, "[${server.displayName}] Skip response-ready: no notifiable assistant message (${event.sessionId})")
-                        return@launch
-                    }
-
-                    val previousNotified = lastNotifiedAssistantMessageBySession.put(
-                        event.sessionId,
-                        assistantMessageId,
-                    )
-                    if (previousNotified == assistantMessageId) {
-                        Log.i(TAG, "[${server.displayName}] Skip duplicate response-ready (${event.sessionId}, msg=$assistantMessageId)")
-                        return@launch
-                    }
-
-                    Log.i(TAG, "[${server.displayName}] Session idle -> Response ready for ${event.sessionId}")
-                        showTaskCompleteNotification(server, event.sessionId)
+                    notifySessionComplete(server, event.sessionId)
                 }
             }
             is SseEvent.PermissionAsked -> {
@@ -1028,6 +1145,33 @@ class OpenCodeConnectionService : Service() {
     }
 
     // ============ Helpers ============
+
+    /**
+     * 会话完成后推送「回复就绪」通知（供 SSE session.idle 与轮询兜底共用）。
+     * 内部做通知开关检查 + 按最后一条 assistant 消息去重，避免 SSE 与轮询重复推送。
+     */
+    private suspend fun notifySessionComplete(server: ServerConfig, sessionId: String) {
+        if (!settingsRepository.notificationsEnabled.first()) {
+            Log.i(TAG, "[${server.displayName}] Session idle but notifications disabled: $sessionId")
+            return
+        }
+        if (!connections.containsKey(server.id)) {
+            Log.i(TAG, "[${server.displayName}] Session idle but server disconnected, skip: $sessionId")
+            return
+        }
+        val assistantMessageId = latestNotifiableAssistantMessageId(sessionId)
+        if (assistantMessageId == null) {
+            Log.i(TAG, "[${server.displayName}] Skip response-ready: no notifiable assistant message ($sessionId)")
+            return
+        }
+        val previousNotified = lastNotifiedAssistantMessageBySession.put(sessionId, assistantMessageId)
+        if (previousNotified == assistantMessageId) {
+            Log.i(TAG, "[${server.displayName}] Skip duplicate response-ready ($sessionId, msg=$assistantMessageId)")
+            return
+        }
+        Log.i(TAG, "[${server.displayName}] Session idle -> Response ready for $sessionId")
+        showTaskCompleteNotification(server, sessionId)
+    }
 
     private fun getServerConnection(server: ServerConfig): ServerConnection? {
         return connections[server.id]?.conn

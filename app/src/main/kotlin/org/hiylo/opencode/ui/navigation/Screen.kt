@@ -16,6 +16,32 @@ internal fun encodeNavigationArgument(value: String): String =
     URLEncoder.encode(value, StandardCharsets.UTF_8.name()).replace("+", "%20")
 
 /**
+ * 构建带公共 server 参数的路由。
+ *
+ * 所有 server 路由的公共参数顺序固定为 serverUrl/username/password/serverName/serverId
+ * （与 NavGraph 的 route 模式一致），额外参数通过 [extra] 追加，避免每个 Screen 重复
+ * encode 相同参数。值统一做 URL 编码。
+ */
+internal fun serverRoute(
+    name: String,
+    serverUrl: String,
+    username: String,
+    password: String,
+    serverName: String,
+    serverId: String,
+    vararg extra: Pair<String, String>,
+): String {
+    val parts = listOf(
+        "serverUrl" to encodeNavigationArgument(serverUrl),
+        "username" to encodeNavigationArgument(username),
+        "password" to encodeNavigationArgument(password),
+        "serverName" to encodeNavigationArgument(serverName),
+        "serverId" to encodeNavigationArgument(serverId),
+    ) + extra.map { (k, v) -> k to encodeNavigationArgument(v) }
+    return "$name?" + parts.joinToString("&") { "${it.first}=${it.second}" }
+}
+
+/**
  * Navigation routes for the app
  */
 sealed class Screen(val route: String) {
@@ -47,14 +73,7 @@ sealed class Screen(val route: String) {
             password: String,
             serverName: String,
             serverId: String
-        ): String {
-            val encodedUrl = encodeNavigationArgument(serverUrl)
-            val encodedUsername = encodeNavigationArgument(username)
-            val encodedPassword = encodeNavigationArgument(password)
-            val encodedName = encodeNavigationArgument(serverName)
-            val encodedServerId = encodeNavigationArgument(serverId)
-            return "sessions?serverUrl=$encodedUrl&username=$encodedUsername&password=$encodedPassword&serverName=$encodedName&serverId=$encodedServerId"
-        }
+        ): String = serverRoute("sessions", serverUrl, username, password, serverName, serverId)
     }
     
     data object Chat : Screen("chat") {
@@ -66,15 +85,10 @@ sealed class Screen(val route: String) {
             serverId: String,
             sessionId: String,
             openTerminal: Boolean = false,
-        ): String {
-            val encodedUrl = encodeNavigationArgument(serverUrl)
-            val encodedUsername = encodeNavigationArgument(username)
-            val encodedPassword = encodeNavigationArgument(password)
-            val encodedName = encodeNavigationArgument(serverName)
-            val encodedServerId = encodeNavigationArgument(serverId)
-            val encodedSessionId = encodeNavigationArgument(sessionId)
-            return "chat?serverUrl=$encodedUrl&username=$encodedUsername&password=$encodedPassword&serverName=$encodedName&serverId=$encodedServerId&sessionId=$encodedSessionId&openTerminal=$openTerminal"
-        }
+        ): String = serverRoute(
+            "chat", serverUrl, username, password, serverName, serverId,
+            "sessionId" to sessionId, "openTerminal" to openTerminal.toString(),
+        )
     }
 
     data object WorkspaceFiles : Screen("workspace_files") {
@@ -99,14 +113,7 @@ sealed class Screen(val route: String) {
             serverName: String,
             serverId: String,
             directory: String,
-        ): String {
-            return "git?serverUrl=${encodeNavigationArgument(serverUrl)}" +
-                "&username=${encodeNavigationArgument(username)}" +
-                "&password=${encodeNavigationArgument(password)}" +
-                "&serverName=${encodeNavigationArgument(serverName)}" +
-                "&serverId=${encodeNavigationArgument(serverId)}" +
-                "&directory=${encodeNavigationArgument(directory)}"
-        }
+        ): String = serverRoute("git", serverUrl, username, password, serverName, serverId, "directory" to directory)
     }
 
     data object ServerSettings : Screen("server_settings") {
@@ -116,14 +123,7 @@ sealed class Screen(val route: String) {
             password: String,
             serverName: String,
             serverId: String
-        ): String {
-            val encodedUrl = encodeNavigationArgument(serverUrl)
-            val encodedUsername = encodeNavigationArgument(username)
-            val encodedPassword = encodeNavigationArgument(password)
-            val encodedName = encodeNavigationArgument(serverName)
-            val encodedServerId = encodeNavigationArgument(serverId)
-            return "server_settings?serverUrl=$encodedUrl&username=$encodedUsername&password=$encodedPassword&serverName=$encodedName&serverId=$encodedServerId"
-        }
+        ): String = serverRoute("server_settings", serverUrl, username, password, serverName, serverId)
     }
 
     data object ServerManagement : Screen("server_management") {
@@ -134,16 +134,7 @@ sealed class Screen(val route: String) {
             serverName: String,
             serverId: String,
             directory: String = "",
-        ): String {
-            val encodedUrl = encodeNavigationArgument(serverUrl)
-            val encodedUsername = encodeNavigationArgument(username)
-            val encodedPassword = encodeNavigationArgument(password)
-            val encodedName = encodeNavigationArgument(serverName)
-            val encodedServerId = encodeNavigationArgument(serverId)
-            val encodedDirectory = encodeNavigationArgument(directory)
-            return "server_management?serverUrl=$encodedUrl&username=$encodedUsername&password=$encodedPassword" +
-                "&serverName=$encodedName&serverId=$encodedServerId&directory=$encodedDirectory"
-        }
+        ): String = serverRoute("server_management", serverUrl, username, password, serverName, serverId, "directory" to directory)
     }
 
     data object ServerProviders : Screen("server_providers") {
@@ -153,14 +144,7 @@ sealed class Screen(val route: String) {
             password: String,
             serverName: String,
             serverId: String
-        ): String {
-            val encodedUrl = encodeNavigationArgument(serverUrl)
-            val encodedUsername = encodeNavigationArgument(username)
-            val encodedPassword = encodeNavigationArgument(password)
-            val encodedName = encodeNavigationArgument(serverName)
-            val encodedServerId = encodeNavigationArgument(serverId)
-            return "server_providers?serverUrl=$encodedUrl&username=$encodedUsername&password=$encodedPassword&serverName=$encodedName&serverId=$encodedServerId"
-        }
+        ): String = serverRoute("server_providers", serverUrl, username, password, serverName, serverId)
     }
 
     data object ServerModelFilter : Screen("server_model_filter") {
@@ -170,14 +154,7 @@ sealed class Screen(val route: String) {
             password: String,
             serverName: String,
             serverId: String
-        ): String {
-            val encodedUrl = encodeNavigationArgument(serverUrl)
-            val encodedUsername = encodeNavigationArgument(username)
-            val encodedPassword = encodeNavigationArgument(password)
-            val encodedName = encodeNavigationArgument(serverName)
-            val encodedServerId = encodeNavigationArgument(serverId)
-            return "server_model_filter?serverUrl=$encodedUrl&username=$encodedUsername&password=$encodedPassword&serverName=$encodedName&serverId=$encodedServerId"
-        }
+        ): String = serverRoute("server_model_filter", serverUrl, username, password, serverName, serverId)
     }
 
     data object ServerMcp : Screen("server_mcp") {
@@ -187,16 +164,29 @@ sealed class Screen(val route: String) {
             password: String,
             serverName: String,
             serverId: String,
-        ): String {
-            val encodedUrl = encodeNavigationArgument(serverUrl)
-            val encodedUsername = encodeNavigationArgument(username)
-            val encodedPassword = encodeNavigationArgument(password)
-            val encodedName = encodeNavigationArgument(serverName)
-            val encodedServerId = encodeNavigationArgument(serverId)
-            return "server_mcp?serverUrl=$encodedUrl&username=$encodedUsername&password=$encodedPassword&serverName=$encodedName&serverId=$encodedServerId"
-        }
+        ): String = serverRoute("server_mcp", serverUrl, username, password, serverName, serverId)
     }
-    
+
+    data object TaskList : Screen("tasks") {
+        fun createRoute(
+            serverUrl: String,
+            username: String,
+            password: String,
+            serverName: String,
+            serverId: String,
+        ): String = serverRoute("tasks", serverUrl, username, password, serverName, serverId)
+    }
+
+    data object Skills : Screen("skills") {
+        fun createRoute(
+            serverUrl: String,
+            username: String,
+            password: String,
+            serverName: String,
+            serverId: String,
+        ): String = serverRoute("skills", serverUrl, username, password, serverName, serverId)
+    }
+
     data object Settings : Screen("settings")
     data object SyncSettings : Screen("sync_settings")
     data object Diagnostics : Screen("diagnostics")

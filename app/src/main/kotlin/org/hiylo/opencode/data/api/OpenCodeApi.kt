@@ -221,6 +221,13 @@ class OpenCodeApi @Inject constructor(
         }.body()
     }
 
+    /** 列出该服务器的所有 skill（含 SKILL.md 内容，只读）。 */
+    suspend fun listSkills(conn: ServerConnection): List<Skill> {
+        return httpClient.get("${conn.baseUrl}/skill") {
+            conn.authHeader?.let { header("Authorization", it) }
+        }.body()
+    }
+
     /** Returns session info as raw JSON string (for export without re-serialization). */
     suspend fun getSessionRaw(conn: ServerConnection, sessionId: String): String {
         return httpClient.get("${conn.baseUrl}/session/$sessionId") {

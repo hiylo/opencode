@@ -51,6 +51,8 @@ fun ServerSettingsScreen(
     onOpenProviders: () -> Unit,
     onOpenModels: () -> Unit,
     onOpenMcp: () -> Unit,
+    onOpenTasks: () -> Unit,
+    onOpenSkills: () -> Unit,
 ) {
     val isAmoled = isAmoledTheme()
     Scaffold(
@@ -185,6 +187,86 @@ fun ServerSettingsScreen(
                         )
                         Text(
                             text = stringResource(R.string.server_settings_mcp_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
+                        )
+                    }
+                    Icon(
+                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            Card(
+                shape = AppCardShape,
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isAmoled) Color.Black else MaterialTheme.colorScheme.surfaceContainer
+                ),
+                border = appAmoledBorder(0.65f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onOpenSkills)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.DeviceHub, contentDescription = null)
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 12.dp)
+                    ) {
+                        Text(
+                            text = stringResource(R.string.server_settings_skills),
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Text(
+                            text = stringResource(R.string.server_settings_skills_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
+                        )
+                    }
+                    Icon(
+                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            Card(
+                shape = AppCardShape,
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isAmoled) Color.Black else MaterialTheme.colorScheme.surfaceContainer
+                ),
+                border = appAmoledBorder(0.65f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onOpenTasks)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.DeviceHub, contentDescription = null)
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 12.dp)
+                    ) {
+                        Text(
+                            text = stringResource(R.string.server_settings_tasks),
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Text(
+                            text = stringResource(R.string.server_settings_tasks_desc),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
                         )

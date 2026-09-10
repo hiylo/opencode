@@ -71,6 +71,8 @@ import org.hiylo.opencode.ui.screens.server.ServerMcpScreen
 import org.hiylo.opencode.ui.screens.server.ServerProvidersScreen
 import org.hiylo.opencode.ui.screens.server.ServerSettingsScreen
 import org.hiylo.opencode.ui.screens.server.ServerManagementScreen
+import org.hiylo.opencode.ui.screens.server.SkillsScreen
+import org.hiylo.opencode.ui.screens.tasks.TaskListScreen
 import org.hiylo.opencode.ui.screens.webview.WebViewScreen
 import org.hiylo.opencode.service.OpenCodeConnectionService
 import androidx.core.content.ContextCompat
@@ -561,8 +563,56 @@ fun NavGraph(
                             serverId = serverId,
                         )
                     )
+                },
+                onOpenTasks = {
+                    navController.navigate(
+                        Screen.TaskList.createRoute(
+                            serverUrl = serverUrl,
+                            username = username,
+                            password = password,
+                            serverName = serverName,
+                            serverId = serverId,
+                        )
+                    )
+                },
+                onOpenSkills = {
+                    navController.navigate(
+                        Screen.Skills.createRoute(
+                            serverUrl = serverUrl,
+                            username = username,
+                            password = password,
+                            serverName = serverName,
+                            serverId = serverId,
+                        )
+                    )
                 }
             )
+        }
+
+        composable(
+            route = "tasks?serverUrl={serverUrl}&username={username}&password={password}&serverName={serverName}&serverId={serverId}",
+            arguments = listOf(
+                navArgument("serverUrl") { type = NavType.StringType },
+                navArgument("username") { type = NavType.StringType },
+                navArgument("password") { type = NavType.StringType },
+                navArgument("serverName") { type = NavType.StringType },
+                navArgument("serverId") { type = NavType.StringType },
+            )
+        ) {
+            TaskListScreen(onNavigateBack = { navController.popBackStack() })
+        }
+
+        composable(
+            route = "skills?serverUrl={serverUrl}&username={username}&password={password}&serverName={serverName}&serverId={serverId}",
+            arguments = listOf(
+                navArgument("serverUrl") { type = NavType.StringType },
+                navArgument("username") { type = NavType.StringType },
+                navArgument("password") { type = NavType.StringType },
+                navArgument("serverName") { type = NavType.StringType },
+                navArgument("serverId") { type = NavType.StringType },
+            )
+        ) {
+            SkillsScreen(onNavigateBack = { navController.popBackStack() })
         }
 
         composable(

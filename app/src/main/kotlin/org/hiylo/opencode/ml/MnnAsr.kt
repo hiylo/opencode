@@ -91,15 +91,19 @@ object MnnAsr {
     /**
      * 当前设备是否支持语音识别（需 arm64-v8a + JNI 库存在）。
      *
-     * 注意：`libsherpa-mnn-jni.so` 依赖 `MNN::Express` 符号，其 DT_NEEDED 已由
-     * `patchelf --replace-needed libMNN.so libMNN_Express.so` 调整为指向本 App 的
-     * 拆分版 MNN 的 Express 库（该库又传递依赖 libMNN.so 与 libc++_shared.so），
-     * 因此这里直接加载 sherpa JNI 即可。
+     * `libsherpa-mnn-jni.so` 是按「单体 MNN」编译的（其 DT_NEEDED 只指向 libMNN.so，
+     * 依赖的 MNN::Express 符号位于单体 libMNN.so 内），而本 App 打包的是拆分版 MNN
+     * （core 在 libMNN.so，Express 在 libMNN_Express.so）。因此加载 sherpa JNI 前先加载
+     * libMNN.so 与 libMNN_Express.so，使 MNN::Express 符号在命名空间内可见。
      */
     fun isSupported(): Boolean {
         val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return false
         if (abi != "arm64-v8a") return false
-        return runCatching { System.loadLibrary("sherpa-mnn-jni") }.isSuccess
+        return runCatching {
+            System.loadLibrary("MNN")
+            System.loadLibrary("MNN_Express")
+            System.loadLibrary("sherpa-mnn-jni")
+        }.isSuccess
     }
 
     /**
@@ -165,6 +169,14 @@ object MnnAsr {
      */
     suspend fun ensureLoaded(context: Context): Boolean {
         if (recognizer != null) return true
+        // 确保原生库已按依赖顺序加载（幂等）。
+        if (!runCatching {
+                System.loadLibrary("MNN")
+                System.loadLibrary("MNN_Express")
+                System.loadLibrary("sherpa-mnn-jni")
+            }.isSuccess) {
+            return false
+        }
         return withContext(Dispatchers.IO) {
             val dir = File(context.filesDir, "mnn_models/$MODEL_DIR_NAME")
             if (!isModelPresent(dir)) return@withContext false
