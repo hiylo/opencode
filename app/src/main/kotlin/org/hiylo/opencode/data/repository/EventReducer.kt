@@ -961,18 +961,33 @@ class EventReducer @Inject constructor() {
     /**
      * Load initial session list for a server.
      * Registers all session IDs as belonging to the given serverId.
+     *
+     * The server's root-session list is authoritative: it fully replaces the previous snapshot
+     * for this server, so root sessions that were archived / deleted / moved elsewhere are dropped
+     * from the local cache instead of lingering as stale "ghost" entries. Child sessions (tracked
+     * via SSE) are preserved because they are not part of the roots list.
      */
     fun setSessions(serverId: String, sessions: List<Session>) {
         val compactedSessions = sessions.map(::compactSessionForCache)
         val sessionIds = compactedSessions.map { it.id }.toSet()
+        val oldSessionIds = _serverSessions.value[serverId] ?: emptySet()
+        // Only drop *root* sessions that the server no longer reports; keep child sessions.
+        val oldRootIds = _sessions.value.asSequence()
+            .filter { it.id in oldSessionIds && it.parentId == null }
+            .map { it.id }
+            .toSet()
+        val removedIds = oldRootIds - sessionIds
+
         _serverSessions.update { current ->
-            val existing = current[serverId] ?: emptySet()
-            if (sessionIds.all { it in existing }) return@update current
-            current + (serverId to (existing + sessionIds))
+            val newSet = (oldSessionIds - removedIds) + sessionIds
+            if (current[serverId] == newSet) return@update current
+            current + (serverId to newSet)
         }
         _sessions.update { current ->
-            // Merge: replace existing sessions by ID, add new ones
-            val updated = current.toMutableList()
+            // Drop stale root sessions, then merge/refresh the reported ones.
+            val updated = current
+                .filter { it.id !in removedIds }
+                .toMutableList()
             for (session in compactedSessions) {
                 val idx = updated.indexOfFirst { it.id == session.id }
                 if (idx >= 0) {

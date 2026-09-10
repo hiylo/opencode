@@ -834,7 +834,9 @@ class OpenCodeConnectionService : Service() {
                 .filter { it.id in serverSessionIds }
                 .map { it.id }
                 .toSet()
-            eventReducer.replaceSessionStatuses(server.id, sessionIds, statuses)
+            // 重连对账是完整的状态同步：/session/status 快照是服务端当前真实状态，
+            // 省略的会话即为已空闲，必须纠正掉断线期间残留的 Busy（connected=false 语义）。
+            eventReducer.replaceSessionStatuses(server.id, sessionIds, statuses, connected = false)
             permissions += api.listPendingPermissions(conn).map { request ->
                 SseEvent.PermissionAsked(
                     id = request.id,

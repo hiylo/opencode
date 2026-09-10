@@ -172,7 +172,9 @@ class OpenCodeApi @Inject constructor(
     // ============ Session ============
 
     suspend fun listSessions(conn: ServerConnection, directory: String? = null): List<Session> {
-        return httpClient.get("${conn.baseUrl}/session") {
+        // 使用 /experimental/session 列出所有 project 的根会话；
+        // /session 只返回当前 project（x-opencode-directory）的会话，会导致其它项目的会话缺失。
+        return httpClient.get("${conn.baseUrl}/experimental/session") {
             conn.authHeader?.let { header("Authorization", it) }
             directory?.let { header("x-opencode-directory", it) }
             parameter("roots", "true")
@@ -254,7 +256,11 @@ class OpenCodeApi @Inject constructor(
     ): Session {
         val body = buildMap {
             title?.let { put("title", it) }
-            archive?.let { put("archive", it) }
+            // opencode 服务端的归档字段是嵌套的 time.archived（毫秒时间戳），
+            // 归档传当前时间、取消归档传 null，而非顶层 archive 布尔。
+            archive?.let {
+                put("time", mapOf("archived" to if (it) System.currentTimeMillis() else null))
+            }
         }
         return httpClient.patch("${conn.baseUrl}/session/$sessionId") {
             conn.authHeader?.let { header("Authorization", it) }
