@@ -176,6 +176,8 @@ import org.hiylo.opencode.data.api.ProviderModel
 import org.hiylo.opencode.MainActivity
 import org.hiylo.opencode.ui.screens.settings.SessionExport
 import org.hiylo.opencode.ui.theme.CodeTypography
+import org.hiylo.opencode.ui.theme.StatusConnected
+import org.hiylo.opencode.ui.theme.StatusError
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
@@ -312,6 +314,7 @@ private fun performHaptic(view: android.view.View, config: AppHapticConfig) {
  * Agent color matching the TUI's opencode theme.
  * Color cycle: secondary, accent, success, warning, primary, error, info
  * (same order as TUI's local.tsx color array).
+ * Fixed palette — tool-specific color, not themed.
  */
 private val agentColorCycle = listOf(
     Color(0xFF5C9CF5), // secondary — build (blue)
@@ -4518,8 +4521,8 @@ private fun SessionTerminalInline(
                     )
                 }
                 val selectionColors = TextSelectionColors(
-                    handleColor = Color(0xFF4FC3F7),
-                    backgroundColor = Color(0xFF4FC3F7).copy(alpha = 0.4f)
+                    handleColor = MaterialTheme.colorScheme.tertiary,
+                    backgroundColor = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.4f)
                 )
                 CompositionLocalProvider(
                     LocalTextToolbar provides terminalTextToolbar,
@@ -4568,7 +4571,7 @@ private fun SessionTerminalInline(
                                 .size(width = 2.dp, height = cursorH)
                         },
                     )
-                    Box(modifier = cursorModifier.background(Color(0xFFD3D7CF)))
+                    Box(modifier = cursorModifier.background(Color(0xFFD3D7CF))) // Fixed palette — terminal cursor color, not themed
                 }
             }
         }
@@ -4605,7 +4608,7 @@ private fun TerminalPanelCoachmark(
 ) {
     val isAmoled = isAmoledTheme()
     val accent = MaterialTheme.colorScheme.primary
-    val coachmarkColor = if (isAmoled) Color(0xFF242429) else MaterialTheme.colorScheme.surfaceContainerHigh
+    val coachmarkColor = MaterialTheme.colorScheme.surfaceContainerHigh
     val transition = rememberInfiniteTransition(label = "terminal_panel_swipe_hint")
     val swipeProgress by transition.animateFloat(
         initialValue = 0f,
@@ -4722,7 +4725,7 @@ private fun TerminalKeyboardOverlay(
         modifier = modifier,
         tonalElevation = 0.dp,
         shadowElevation = 0.dp,
-        color = if (isAmoled) Color.Black else Color(0xFF1A1A1A),
+        color = if (isAmoled) Color.Black else MaterialTheme.colorScheme.surfaceContainer,
     ) {
         Column(
             modifier = Modifier
@@ -4743,7 +4746,7 @@ private fun TerminalKeyboardOverlay(
                 )
             )
             if (!isAmoled) {
-                HorizontalDivider(thickness = 1.dp, color = Color(0xFF333333))
+                HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
             }
             // Row 2: matches Termux default extra keys
             TerminalKeyRow(
@@ -4787,14 +4790,14 @@ private fun TerminalKeyRow(keys: List<TerminalKey>, isAmoled: Boolean) {
                     Modifier
                         .width(1.dp)
                         .height(34.dp)
-                        .background(Color(0xFF333333))
+                        .background(MaterialTheme.colorScheme.outlineVariant)
                 )
             }
             val keyColor = when {
                 isAmoled && key.active -> MaterialTheme.colorScheme.primary
                 isAmoled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f)
-                key.active -> Color(0xFF80CBC4)
-                else -> Color(0xFFCCCCCC)
+                key.active -> MaterialTheme.colorScheme.tertiary
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
             }
             val interactionModifier = if (key.repeatable) {
                 Modifier.pointerInput(key.action) {
@@ -4839,7 +4842,7 @@ private fun TerminalKeyRow(keys: List<TerminalKey>, isAmoled: Boolean) {
                                     MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
                                 },
                             )
-                            key.active -> Modifier.background(Color(0xFF333333))
+                            key.active -> Modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh)
                             else -> Modifier
                         }
                     )
@@ -6693,8 +6696,8 @@ private fun UnifiedPatchView(patch: String) {
                         text = line,
                         style = CodeTypography.copy(
                             color = when {
-                                added -> Color(0xFF2E7D32)
-                                removed -> Color(0xFFC62828)
+                                added -> StatusConnected
+                                removed -> StatusError
                                 header -> MaterialTheme.colorScheme.primary
                                 else -> MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.75f)
                             },
@@ -6703,8 +6706,8 @@ private fun UnifiedPatchView(patch: String) {
                             .fillMaxWidth()
                             .background(
                                 when {
-                                    added -> Color(0xFF4CAF50).copy(alpha = 0.10f)
-                                    removed -> Color(0xFFE53935).copy(alpha = 0.10f)
+                                    added -> StatusConnected.copy(alpha = 0.10f)
+                                    removed -> StatusError.copy(alpha = 0.10f)
                                     else -> Color.Transparent
                                 },
                             ),
@@ -6896,8 +6899,8 @@ private fun EditToolCard(tool: Part.Tool) {
  */
 @Composable
 private fun DiffChangesInline(additions: Int, deletions: Int) {
-    val addColor = Color(0xFF4CAF50)
-    val delColor = Color(0xFFE53935)
+    val addColor = StatusConnected
+    val delColor = StatusError
     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         if (additions > 0) {
             Text(
@@ -6921,10 +6924,10 @@ private fun DiffChangesInline(additions: Int, deletions: Int) {
 @Composable
 private fun DiffView(before: String, after: String) {
     val isAmoled = isAmoledTheme()
-    val addColor = Color(0xFF4CAF50)
-    val delColor = Color(0xFFE53935)
-    val addBg = Color(0xFF4CAF50).copy(alpha = 0.1f)
-    val delBg = Color(0xFFE53935).copy(alpha = 0.1f)
+    val addColor = StatusConnected
+    val delColor = StatusError
+    val addBg = StatusConnected.copy(alpha = 0.1f)
+    val delBg = StatusError.copy(alpha = 0.1f)
 
     // Simple diff: show removed lines, then added lines
     // For a proper diff we'd need a diff library, but line-level comparison works for edit tools

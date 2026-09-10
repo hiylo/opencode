@@ -218,7 +218,7 @@ class TerminalEmulator(initialCols: Int = 80, initialRows: Int = 24) {
     /** Render visible window (screen + optional scrollback) to AnnotatedString. */
     @Synchronized
     fun render(scrollbackOffsetRows: Int = 0, windowRows: Int = rows): AnnotatedString {
-        val defaultFg = Color(0xFFD3D7CF)
+        val defaultFg = Color(0xFFD3D7CF) // Fixed palette — terminal default foreground (ANSI white), not themed
         val defaultBg = Color.Black
         val visibleRows = resolveVisibleRows(scrollbackOffsetRows, windowRows)
 
@@ -305,7 +305,7 @@ class TerminalEmulator(initialCols: Int = 80, initialRows: Int = 24) {
      */
     @Synchronized
     fun renderRuns(scrollbackOffsetRows: Int = 0, windowRows: Int = rows): List<List<TerminalRun>> {
-        val defaultFg = Color(0xFFD3D7CF)
+        val defaultFg = Color(0xFFD3D7CF) // Fixed palette — terminal default foreground (ANSI white), not themed
         val defaultBg = Color.Black
         val visibleRows = resolveVisibleRows(scrollbackOffsetRows, windowRows)
 
@@ -1228,7 +1228,7 @@ class TerminalEmulator(initialCols: Int = 80, initialRows: Int = 24) {
             return newScreen
         }
 
-        /** Standard 16-color ANSI palette. */
+        /** Standard 16-color ANSI palette. Fixed palette — tool-specific color, not themed. */
         fun ansiColor(index: Int): Color {
             return when (index) {
                 0 -> Color(0xFF2E3436)   // Black

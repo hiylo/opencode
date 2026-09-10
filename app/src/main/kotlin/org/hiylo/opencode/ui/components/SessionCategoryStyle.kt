@@ -32,6 +32,11 @@ val SessionCategoryIconKeys = listOf(
     "work", "home", "bug", "idea", "research", "urgent", "code", "docs", "star", "build",
 )
 
+/**
+ * Category color for a session category key.
+ * Fixed palette — categorical 8-color scale for visual distinction of session
+ * categories; tool/category-specific colors, not themed.
+ */
 fun sessionCategoryColor(key: String): Color = when (key) {
     "red" -> Color(0xFFE85D68)
     "orange" -> Color(0xFFF28C48)
