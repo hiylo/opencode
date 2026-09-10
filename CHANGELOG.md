@@ -14,13 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **On-device voice input** — replaced the system speech recognizer with an on-device **MNN sherpa-mnn streaming Zipformer (bilingual zh/en, int8)** model downloaded from ModelScope with per-file SHA-256 verification; hold-to-talk with release-to-fill, slide-up-to-cancel, and a live volume waveform. The mic button only appears after the model is downloaded in Settings.
 - **Global search** — cross-server, cross-project aggregation of all root sessions, searchable by title/directory/project/branch and filterable by time (today / 7 days / 30 days).
-- **Session list** — one-tap multi-server switching via a server chip row; pinned-session drag-to-reorder through a dedicated reorder dialog; search time filter.
+- **Session list** — one-tap multi-server switching via a server chip row; pinned-session drag-to-reorder through a dedicated reorder dialog; search time filter; compact layout reusing the chat compact-mode toggle.
 - **SSH tunnel & health monitoring** — optional SSH tunnel (JSch local port-forwarding) to connect and restart the opencode service remotely; connection health (latency / heartbeat / status) on the server management page.
 - **Chat** — custom Slash commands (`/name` inserts a prompt, persisted, add/remove); quote-reply that fills the input with a Markdown blockquote; session export (Markdown / JSON).
 
 ### Fixed
 - **Status flicker / stuck conversation** — the session status poll no longer clobbers a live `busy` state with a stale snapshot while the SSE stream is connected; omitted sessions are only reconciled to idle when disconnected.
 - **Foldable two-pane back navigation** — entering a child session now pushes onto the pane back stack and back returns to the parent session instead of exiting the whole screen.
+- **Session list missing sessions across projects** — the list now uses the cross-project root-session endpoint and treats the server snapshot as authoritative, so sessions from other projects no longer go missing (nor linger as stale ghosts).
+- **Archive not working** — archiving now writes the nested `time.archived` field the server expects, so archiving/unarchiving actually takes effect.
+- **Session list cleared after opening a session** — opening/creating a session no longer wipes the other sessions from the list (partial lists are merged via upsert instead of replacing the whole snapshot).
+- **Voice model download entry hidden** — fixed the bundled ASR JNI's MNN dependency so the Settings voice-model download entry (and the chat mic button) appears instead of silently failing to load.
 - Recovered model/API layers (SSH config, session archive, custom commands, voice methods) that had been lost in a worktree reset.
 
 ## [1.1.0] - 2026-09-08
