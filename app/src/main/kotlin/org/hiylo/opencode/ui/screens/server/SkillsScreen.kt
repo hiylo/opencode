@@ -51,6 +51,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -208,8 +209,20 @@ private fun SkillCard(skill: Skill) {
                 Spacer(Modifier.height(8.dp))
                 Markdown(
                     content = skill.content,
-                    colors = markdownColor(),
-                    typography = markdownTypography(),
+                    colors = markdownColor(text = MaterialTheme.colorScheme.onSurface),
+                    typography = markdownTypography(
+                        h1 = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                        h2 = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                        h3 = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        h4 = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        h5 = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                        h6 = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                        text = MaterialTheme.typography.labelSmall,
+                        paragraph = MaterialTheme.typography.labelSmall,
+                        bullet = MaterialTheme.typography.labelSmall,
+                        ordered = MaterialTheme.typography.labelSmall,
+                        list = MaterialTheme.typography.labelSmall,
+                    ),
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
